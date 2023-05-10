@@ -32,6 +32,7 @@
 -type bucket_size() :: non_neg_integer().
 -type refill_interval() :: pos_integer().
 -type refill_count() :: pos_integer().
+-type override() :: none | not_enforced | blocked.
 -type already_exists() :: already_exists.
 -type blocked() :: blocked.
 -type no_such_speed_trap() :: no_such_speed_trap.
@@ -47,22 +48,19 @@
     refill_interval := refill_interval(),
     refill_count := refill_count(),
     delete_when_full := boolean(),
-    enforce_rate_limit => boolean(),
-    blocked => boolean()}.
+    override := override()}.
 -type stored_options() ::
   #{bucket_size := bucket_size(),
     refill_interval := refill_interval(),
     refill_count := refill_count(),
     delete_when_full := boolean(),
-    enforce_rate_limit => boolean(),
-    blocked := boolean()}.
+    override := override()}.
 -type modify_options() ::
   #{bucket_size => bucket_size(),
     refill_interval => refill_interval(),
     refill_count => refill_count(),
     delete_when_full => boolean(),
-    enforce_rate_limit => boolean(),
-    blocked => boolean()}.
+    override => override()}.
 
 -export_type([id/0, bucket_size/0, refill_interval/0, refill_count/0, options/0, stored_options/0,
               modify_options/0, already_exists/0, no_such_speed_trap/0, too_many_requests/0,
@@ -116,11 +114,11 @@ options(Id) ->
 
 -spec block(id()) -> ok | {error, speed_trap_options:bad_options() | no_such_speed_trap()}.
 block(Id) ->
-  modify(Id, #{blocked => true}).
+  modify(Id, #{override => blocked}).
 
 -spec unblock(id()) -> ok | {error, no_such_speed_trap()}.
 unblock(Id) ->
-  modify(Id, #{blocked => false}).
+  modify(Id, #{override => none}).
 
 %%-----------------------------------------------------------------------------
 %% Internal functions

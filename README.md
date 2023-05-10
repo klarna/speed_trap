@@ -30,9 +30,7 @@ A token bucket rate limiter is defined by four mandatory parameters:
 * `refill_interval`, milliseconds, how often the bucket is refilled with tokens
 * `refill_count`, positive integer, how many tokens are added every refill
 * `delete_when_full`, boolean, whether or not to delete the bucket when it's filled up
-
-Optional parameters:
-* `enforce_rate_limit`, boolean, whether or not to allow requests despite there not being enough tokens available. Default: true
+* `override`, none | not_enforced | blocked, whether or not to enforce the rate limit or whether or not all calls should be blocked altogether.
 
 A new speed trap always starts with a full bucket.
 
@@ -106,7 +104,7 @@ Options = #{bucket_size => 40,                   % difference of peak and base r
             refill_interval => timer:seconds(6), % how often the bucket is refilled
             refill_count => 1,                   % number of tokens to refill
             delete_when_full => false            % Do not delete bucket when full
-            enforce_rate_limit => true           % OPTIONAL: Whether or not to enforce the rate limit
+            override => none                     % No overrides
            },
 speed_trap:new(Id, Options).                     % ok | raises the bad_options error
 speed_trap:try_pass(Id).                         % {ok, RemainingTokens | rate_limit_not_enforced} | {error, too_many_requests}
@@ -142,7 +140,7 @@ For the user "Alex" the rate limiter id would be {my_resource, "Alex"}.
     refill_interval => 6000,
     refill_count => 1,
     delete_when_full => true,
-    enforce_rate_limit => true %% Optional!
+    override => none
    }
  }
 },

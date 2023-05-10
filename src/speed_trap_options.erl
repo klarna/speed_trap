@@ -1,6 +1,6 @@
 -module(speed_trap_options).
 
--export([validate/2, check_bad_combination/1, is_blocked/1, is_rate_limit_enforced/1]).
+-export([validate/2, is_blocked/1, is_rate_limit_enforced/1]).
 
 -type bad_options() :: {bad_options, [tuple(), ...]}.
 
@@ -22,39 +22,27 @@ validate(Options, AllRequired) when is_map(Options) ->
                  {refill_interval, true, fun validate_refill_interval/1},
                  {refill_count, true, fun validate_refill_count/1},
                  {delete_when_full, true, fun validate_delete_when_full/1},
-                 {enforce_rate_limit, false, fun validate_enforce_rate_limit/1},
-                 {blocked, false, fun validate_blocked/1}]),
+                 {override, false, fun validate_override/1}]),
   case Errors of
     [] ->
-      check_bad_combination(Options);
+      ok;
     _ ->
       {error, {bad_options, Errors}}
   end;
 validate(Options, _AllPresent) ->
   {error, {bad_options, [{not_a_map, Options}]}}.
 
--spec check_bad_combination(speed_trap:options()) ->
-                             ok |
-                             {error,
-                              {bad_options,
-                               [{blocked, boolean()} | {enforce_rate_limit, boolean()}]}}.
-check_bad_combination(Options) ->
-  IsBlocked = is_blocked(Options),
-  IsRateLimited = is_rate_limit_enforced(Options),
-  case {IsBlocked, IsRateLimited} of
-    {true, false} ->
-      {error, {bad_options, [{blocked, IsBlocked}, {enforce_rate_limit, IsRateLimited}]}};
-    _ ->
-      ok
-  end.
-
 -spec is_blocked(speed_trap:options()) -> boolean().
-is_blocked(Options) ->
-  maps:get(blocked, Options, false).
+is_blocked(#{override := blocked}) ->
+  true;
+is_blocked(_) ->
+  false.
 
 -spec is_rate_limit_enforced(speed_trap:options()) -> boolean().
-is_rate_limit_enforced(Options) ->
-  maps:get(enforce_rate_limit, Options, true).
+is_rate_limit_enforced(#{override := not_enforced}) ->
+  false;
+is_rate_limit_enforced(_) ->
+  true.
 
 %%-----------------------------------------------------------------------------
 %% Internal functions
@@ -95,14 +83,12 @@ validate_delete_when_full(DeleteWhenFull) when is_boolean(DeleteWhenFull) ->
 validate_delete_when_full(DeleteWhenFull) ->
   {error, {delete_when_full, DeleteWhenFull}}.
 
--spec validate_enforce_rate_limit(term()) -> ok | {error, {enforce_rate_limit, term()}}.
-validate_enforce_rate_limit(EnforceRateLimit) when is_boolean(EnforceRateLimit) ->
+-spec validate_override(term()) -> ok | {error, {override, term()}}.
+validate_override(none) ->
   ok;
-validate_enforce_rate_limit(EnforceRateLimit) ->
-  {error, {enforce_rate_limit, EnforceRateLimit}}.
-
--spec validate_blocked(term()) -> ok | {error, {blocked, term()}}.
-validate_blocked(Blocked) when is_boolean(Blocked) ->
+validate_override(not_enforced) ->
   ok;
-validate_blocked(Blocked) ->
-  {error, {blocked, Blocked}}.
+validate_override(blocked) ->
+  ok;
+validate_override(Override) ->
+  {error, {override, Override}}.
