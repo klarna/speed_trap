@@ -66,7 +66,7 @@
 
 -export_type([id/0, bucket_size/0, refill_interval/0, refill_count/0, options/0, stored_options/0,
               modify_options/0, already_exists/0, no_such_speed_trap/0, too_many_requests/0,
-              blocked/0]).
+              try_pass_success/0, blocked/0]).
 
 %% @doc Setup a new TokenBucket.
 %% This is where a rate_limiter is setup for any arbitrary identifier.

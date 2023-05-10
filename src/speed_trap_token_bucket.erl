@@ -81,8 +81,7 @@ modify(Id, Options) ->
   gen_server:call(?SERVER, {modify, Id, Options}).
 
 -spec get_token(speed_trap:id()) ->
-                 {ok, non_neg_integer()} |
-                 {ok, rate_limit_not_enforced} |
+                 {ok, speed_trap:try_pass_success()} |
                  {error,
                   speed_trap:no_such_speed_trap() |
                   speed_trap:too_many_requests() |
@@ -111,8 +110,8 @@ options(Id) ->
   case bucket(Id) of
     {error, no_such_speed_trap} = E ->
       E;
-    {ok, {Options, Blocked, _Ctr}} ->
-      {ok, Options#{blocked => Blocked}}
+    {ok, {Options, _Blocked, _Ctr}} ->
+      {ok, Options}
   end.
 
 -spec bucket(speed_trap:id()) ->
@@ -171,8 +170,8 @@ handle_call({modify, Id, NewOptions}, _From, Timers) ->
   case maps:find(Id, Timers) of
     {ok, OldTimer} ->
       timer:cancel(OldTimer),
-      {ok, {OldOptions, Blocked, Ctr}} = bucket(Id),
-      Options = maps:merge(OldOptions#{blocked => Blocked}, NewOptions),
+      {ok, {OldOptions, _Blocked, Ctr}} = bucket(Id),
+      Options = maps:merge(OldOptions, NewOptions),
       case speed_trap_options:check_bad_combination(Options) of
         ok ->
           Timer = init_trap(Id, Ctr, Options),
