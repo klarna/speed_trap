@@ -488,7 +488,43 @@ block_test() ->
   ?assertEqual(ok, speed_trap:block(Id)),
   ?assertEqual({error, blocked}, speed_trap:try_pass(Id)),
   ?assertEqual(ok, speed_trap:unblock(Id)),
-  ?assertEqual({ok, 98}, speed_trap:try_pass(Id)),
+  ?assertEqual({ok, 99}, speed_trap:try_pass(Id)),
+  application:stop(speed_trap).
+
+blocked_speed_traps_have_empty_counters_test() ->
+  application:ensure_all_started(speed_trap),
+  Id = unique_id(?FUNCTION_NAME),
+  Options =
+    #{bucket_size => 100,
+      refill_interval => 1000,
+      refill_count => 100,
+      delete_when_full => false,
+      override => blocked},
+  ok = speed_trap:new(Id, Options),
+  ?assertMatch([{Id, {Options, undefined}}], ets:tab2list(speed_trap)),
+  %% Test that tokens are set to 'none'
+  ?assertEqual([{Id, Options#{tokens => none}}], speed_trap:all()),
+  ok = speed_trap:unblock(Id),
+  [{Id, {_, Ctr}}] = ets:tab2list(speed_trap),
+  ?assert(is_reference(Ctr)),
+  application:stop(speed_trap).
+
+not_enforced_speed_traps_have_empty_counters_test() ->
+  application:ensure_all_started(speed_trap),
+  Id = unique_id(?FUNCTION_NAME),
+  Options =
+    #{bucket_size => 100,
+      refill_interval => 1000,
+      refill_count => 100,
+      delete_when_full => false,
+      override => not_enforced},
+  ok = speed_trap:new(Id, Options),
+  ?assertMatch([{Id, {Options, undefined}}], ets:tab2list(speed_trap)),
+  %% Test that tokens are set to 'infinity'
+  ?assertEqual([{Id, Options#{tokens => infinity}}], speed_trap:all()),
+  ok = speed_trap:unblock(Id),
+  [{Id, {_, Ctr}}] = ets:tab2list(speed_trap),
+  ?assert(is_reference(Ctr)),
   application:stop(speed_trap).
 
 block_non_existing_test() ->

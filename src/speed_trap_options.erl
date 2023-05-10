@@ -1,6 +1,6 @@
 -module(speed_trap_options).
 
--export([validate/2, is_blocked/1, is_rate_limit_enforced/1]).
+-export([validate/2, is_blocked/1, is_rate_limit_enforced/1, has_override/1]).
 
 -type bad_options() :: {bad_options, [tuple(), ...]}.
 
@@ -31,6 +31,12 @@ validate(Options, AllRequired) when is_map(Options) ->
   end;
 validate(Options, _AllPresent) ->
   {error, {bad_options, [{not_a_map, Options}]}}.
+
+-spec has_override(speed_trap:options()) -> boolean().
+has_override(#{override := none}) ->
+  false;
+has_override(_) ->
+  true.
 
 -spec is_blocked(speed_trap:options()) -> boolean().
 is_blocked(#{override := blocked}) ->

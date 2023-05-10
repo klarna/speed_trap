@@ -42,7 +42,7 @@
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
--type token_bucket() :: atomics:atomics_ref().
+-type token_bucket() :: undefined | atomics:atomics_ref().
 
 -export_type([token_bucket/0]).
 
@@ -127,11 +127,15 @@ bucket(Id) ->
 
 -spec active_buckets() -> [{speed_trap:id(), speed_trap:stored_options()}].
 active_buckets() ->
-  Ids = gen_server:call(?SERVER, active_ids), %% Timeout?
+  Ids = ets:select(?ETS_TABLE, ets:fun2ms(fun({Id, {_Options, _Ctr}}) -> Id end)),
   lists:filtermap(fun(Id) ->
                      case bucket(Id) of
-                       {ok, {Opts, Bucket}} ->
+                       {ok, {#{override := none} = Opts, Bucket}} ->
                          {true, {Id, Opts#{tokens => atomics:get(Bucket, 1)}}};
+                       {ok, {#{override := blocked} = Opts, undefined = _Bucket}} ->
+                         {true, {Id, Opts#{tokens => none}}};
+                       {ok, {#{override := not_enforced} = Opts, undefined = _Bucket}} ->
+                         {true, {Id, Opts#{tokens => infinity}}};
                        {error, no_such_speed_trap} ->
                          false
                      end
@@ -148,9 +152,13 @@ init([]) ->
 
 -spec handle_call(term(), {pid(), term()}, state()) -> {reply, ok | {error, term()}, state()}.
 handle_call({register, Id, #{bucket_size := BucketSize} = Options}, _From, Timers) ->
+  HasOverride = speed_trap_options:has_override(Options),
   case maps:is_key(Id, Timers) of
     true ->
       {reply, {error, already_exists}, Timers};
+    false when HasOverride ->
+      undefined = init_trap(Id, _Ctr = undefined, Options),
+      {reply, ok, Timers};
     false ->
       Ctr = atomics:new(1, [{signed, true}]),
       ok = atomics:put(Ctr, 1, BucketSize),
@@ -167,20 +175,11 @@ handle_call({delete, Id}, _From, Timers) ->
       {reply, {error, no_such_speed_trap}, Timers}
   end;
 handle_call({modify, Id, NewOptions}, _From, Timers) ->
-  case maps:find(Id, Timers) of
-    {ok, OldTimer} ->
-      timer:cancel(OldTimer),
-      {ok, {OldOptions, Ctr}} = bucket(Id),
-      Options = maps:merge(OldOptions, NewOptions),
-      case speed_trap_options:validate(Options, _Required = false) of
-        ok ->
-          Timer = init_trap(Id, Ctr, Options),
-          {reply, ok, maps:update(Id, Timer, Timers)};
-        {error, _BadOptions} = Error ->
-          {reply, Error, Timers}
-      end;
-    error ->
-      {reply, {error, no_such_speed_trap}, Timers}
+  case bucket(Id) of
+    {error, no_such_speed_trap} ->
+      {reply, {error, no_such_speed_trap}, Timers};
+    {ok, {OldOptions, Ctr}} ->
+      do_modify(Id, OldOptions, NewOptions, Ctr, Timers)
   end;
 handle_call(active_ids, _From, Timers) ->
   Ids = maps:keys(Timers),
@@ -233,7 +232,11 @@ add_token(Ctr, BucketSize, RefillCount, DeleteWhenFull) ->
 %%-----------------------------------------------------------------------------
 %% Internal functions
 %%-----------------------------------------------------------------------------
--spec init_trap(speed_trap:id(), atomics:atomics_ref(), speed_trap:options()) -> timer:tref().
+-spec init_trap(speed_trap:id(), undefined | atomics:atomics_ref(), speed_trap:options()) ->
+                 timer:tref() | undefined.
+init_trap(Id, undefined = Ctr, Options) ->
+  true = ets:insert(?ETS_TABLE, {Id, {Options, Ctr}}),
+  undefined;
 init_trap(Id, Ctr, Options) ->
   #{bucket_size := BucketSize,
     refill_interval := RefillInterval,
@@ -260,15 +263,53 @@ ctr_to_id(Ctr) ->
 
 do_get_token(#{override := blocked}, _Ctr) ->
   {error, blocked};
-do_get_token(Options, Ctr) ->
+do_get_token(#{override := not_enforced}, _Ctr) ->
+  {ok, rate_limit_not_enforced};
+do_get_token(_Options, Ctr) ->
   case atomics:sub_get(Ctr, 1, 1) of
     N when N >= 0 ->
       {ok, N};
     _ ->
-      case speed_trap_options:is_rate_limit_enforced(Options) of
+      {error, too_many_requests}
+  end.
+
+do_modify(Id, OldOptions, NewOptions, Ctr, Timers) ->
+  HadOverride = speed_trap_options:has_override(OldOptions),
+  case maps:find(Id, Timers) of
+    {ok, OldTimer} ->
+      timer:cancel(OldTimer),
+      Options = maps:merge(OldOptions, NewOptions),
+      HasOverride = speed_trap_options:has_override(Options),
+      case speed_trap_options:validate(Options, _Required = false) of
+        ok when HasOverride ->
+          undefined = init_trap(Id, undefined, Options),
+          {reply, ok, maps:remove(Id, Timers)};
+        ok when Ctr =:= undefined ->
+          NewCtr = atomics:new(1, [{signed, true}]),
+          #{bucket_size := BucketSize} = Options,
+          ok = atomics:put(NewCtr, 1, BucketSize),
+          Timer = init_trap(Id, NewCtr, Options),
+          {reply, ok, maps:update(Id, Timer, Timers)};
+        ok ->
+          Timer = init_trap(Id, Ctr, Options),
+          {reply, ok, maps:update(Id, Timer, Timers)};
+        {error, _BadOptions} = Error ->
+          {reply, Error, Timers}
+      end;
+    error when HadOverride ->
+      Options = maps:merge(OldOptions, NewOptions),
+      HasOverride = speed_trap_options:has_override(Options),
+      case HasOverride of
         true ->
-          {error, too_many_requests};
+          undefined = init_trap(Id, undefined, Options),
+          {reply, ok, maps:remove(Id, Timers)};
         false ->
-          {ok, rate_limit_not_enforced}
-      end
+          NewCtr = atomics:new(1, [{signed, true}]),
+          #{bucket_size := BucketSize} = Options,
+          ok = atomics:put(NewCtr, 1, BucketSize),
+          Timer = init_trap(Id, NewCtr, Options),
+          {reply, ok, maps:put(Id, Timer, Timers)}
+      end;
+    error ->
+      {reply, {error, no_such_speed_trap}, Timers}
   end.
