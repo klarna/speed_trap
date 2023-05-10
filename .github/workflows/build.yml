@@ -1,0 +1,66 @@
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        platform: [ubuntu-latest]
+        otp-version: [24, 25]
+    runs-on: ${{ matrix.platform }}
+    container:
+      image: erlang:${{ matrix.otp-version }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Cache Hex packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/rebar3/hex/hexpm/packages
+        key: ${{ runner.os }}-hex-${{ hashFiles(format('{0}{1}', github.workspace, '/rebar.lock')) }}
+        restore-keys: |
+          ${{ runner.os }}-hex-
+    - name: Cache Dialyzer PLTs
+      uses: actions/cache@v1
+      with:
+        path: ~/.cache/rebar3/rebar3_*.plt
+        key: ${{ runner.os }}-dialyzer-${{ hashFiles(format('{0}{1}', github.workspace, '/rebar.config')) }}
+        restore-keys: |
+          ${{ runner.os }}-dialyzer-
+    - name: Compile
+      run: make compile
+    - name: EUnit Tests
+      run: make eunit
+    - name: Cover
+      run: make cover
+    - name: Elvis
+      run: make elvis
+    - name: Xref
+      run: make xref
+    - name: Hank
+      run: make hank
+    - name: Dialyzer
+      run: make dialyzer
+    - name: Check app calls
+      run: make app_calls
+    - name: Docs
+      run: make doc || true # older versions of Erlang don't allow ex_doc
+    - name: Formatter
+      run: make format-verify
+    - name: Publish Documentation
+      uses: actions/upload-artifact@v3
+      with:
+        name: edoc
+        path: doc
+    - name: Upload Eunit Test result
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: Eunit test results ${{ matrix.otp-version }}
+        path: .eunit/*.xml"
+        retention-days: 7
