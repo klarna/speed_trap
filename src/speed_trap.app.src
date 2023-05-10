@@ -1,0 +1,12 @@
+%%% -*- erlang -*-
+{application,
+ speed_trap,
+ [{description, "Rate limiter based on Token Bucket algoritm"},
+  {vsn, "git"},
+  {registered, [speed_trap_sup, speed_trap_token_bucket]},
+  {mod, {speed_trap_app, []}},
+  {applications, [kernel, stdlib]},
+  {env, []},
+  {modules, []},
+  {licenses, ["Apache-2.0"]},
+  {links, []}]}.

@@ -1,67 +1,173 @@
-# Project Name
-> Short blurb about what your project does.
+# speed_trap
+A basic Token Bucket rate limiter written in Erlang with no external dependencies.
 
 [![Build Status][ci-image]][ci-url]
 [![License][license-image]][license-url]
 [![Developed at Klarna][klarna-image]][klarna-url]
 
+## Features
+A basic [Token Bucket](https://en.wikipedia.org/wiki/Token_bucket) based rate limiter for Erlang.
+This is a rate limiter in it's most basic form and uses atomics in order to keep track of
+whether or not a request should be rate limited on a per node basis.
 
-One to two paragraph statement about your project and what it does.
+Tests were performed across an [atomics](https://www.erlang.org/doc/man/atomics.html),
+[ets](https://www.erlang.org/doc/man/ets.html) and a [gen_server](https://www.erlang.org/doc/man/gen_server.html)
+based implementation.
 
-## First steps
+Although the benchmark is not provided as part of `speed_trap`, the results are as follows:
 
-<details>
- <summary>Installation (for Admins)</summary>
-  
-  Currently, new repositories can be created only by a Klarna Open Source community lead. Please reach out to us if you need assistance.
-  
-  1. Create a new repository by clicking ‘Use this template’ button.
-  
-  2. Make sure your newly created repository is private.
-  
-  3. Enable Dependabot alerts in your candidate repo settings under Security & analysis. You need to enable ‘Allow GitHub to perform read-only analysis of this repository’ first.
-</details>
+| Implementation | Throughput     | Standard deviation   |
+|----------------|----------------|----------------------|
+| `atomics`      | 31,000,000 cps |             0.915 ms |
+| `ets`          |    760,000 cps |                11 ms |
+| `gen_server`   |    640,000 cps |             0.517 ms |
 
-1. Update `README.md` and `CHANGELOG.md`.
+### How to parameterise a rate limiter?
+A token bucket rate limiter is defined by four mandatory parameters:
 
-2. Optionally, clone [the default contributing guide](https://github.com/klarna-incubator/.github/blob/main/CONTRIBUTING.md) into `.github/CONTRIBUTING.md`.
+* `bucket_size`, positive integer, represents maximum number of tokens that can be available
+  to a client
+* `refill_interval`, milliseconds, how often the bucket is refilled with tokens
+* `refill_count`, positive integer, how many tokens are added every refill
+* `delete_when_full`, boolean, whether or not to delete the bucket when it's filled up
 
-3. Do *not* edit `LICENSE`.
+Optional parameters:
+* `enforce_rate_limit`, boolean, whether or not to allow requests despite there not being enough tokens available. Default: true
+
+A new speed trap always starts with a full bucket.
+
+There is several different ways to achieve the same rate limit. For example, one wants to have
+the base rate of 100 requests per second. All the following ways to define it are correct:
+1. Set the refill interval to 1 second, and the refill count to 100;
+2. Set the refill interval to 100 milliseconds, and the refill count to 10;
+3. Set the refill interval to 10 milliseconds, and the refill count to 1.
+
+In all cases all available tokens can be consumed as soon as possible and then a client will get
+`{error, too_many_requests}` until the bucket is refilled again. The difference, however, is how
+new tokens are distributed across the 1 second period. Assume that one creates speed traps with
+the bucket size of 100.
+
+Let's say the trap with the refill options from the first way was created at 00.000s and a client
+consumes one token per milliseconds. The bucket becomes empty at 00.100s and will be refilled to
+100 at 01.000s.
+
+|  Time   |  Available Tokens  |
+|---------|--------------------|
+| 00.000s | 100 (full bucket)  |
+| 00.001s | 99 (1 consumed)    |
+| 00.002s | 98 (1 consumed)    |
+| ...     | ...                |
+| 00.100s | 0  (1 consumed)    |
+| 01.000s | 100 (100 refilled) |
+
+In the second and the third cases, the availability of tokens are distributed evenly accross the
+correspondent refill intervals. Let's take the 3rd configuration as an example.
+
+* The trap is created at 00.000s, 100 tokens are available to a client. The client consumes one
+  token per millisecond.
+* At 00.010s the number of available tokens is 91: 90 that haven't been consumed yet plus one
+  which is refilled.
+* At 00.020 the total number of tokens in the bucket is 82: 81 haven't been consumed plus
+  the refilled one.
+* And so on.
+
+|  Time   | Available Tokens  |
+|---------|-------------------|
+| 00.000s | 100 (full bucket) |
+| 00.001s | 99 (1 consumed)   |
+| 00.002s | 98 (1 consumed)   |
+| ...     | ...               |
+| 00.010s | 90 (1 consumed)   |
+| 00.010s | 91 (1 refilled)   |
+| 00.011s | 90 (1 consumed)   |
+| 00.011s | 89 (1 consumed)   |
+| ...     | ...               |
+| 00.020s | 81 (1 consumed)   |
+| 00.020s | 82 (1 refilled)   |
+| 00.021s | 81 (1 consumed)   |
+
+Notice, that the momentary peak rate can be as high as the bucket size. This might be especially
+important when the requests are distributed unevenly. So, if one wants to support short periods
+with burst of requests on the system with a relatively low base rate, one could set the bucket
+size parameter to a higher value.
+
+It does not make sense to set the bucket size to a lower value than the refill count because
+in this case the bucket will contain the overflowing tokens anyway.
 
 ## Usage example
+Example of setting up and using a rate limiter for POST requests to the captcha page
+that should handle a 10 requests per minute base load and allow 50 requests per minute
+peaks:
 
-A few motivating and useful examples of how your project can be used. Spice this up with code blocks and potentially more screenshots.
-
-_For more examples and usage, please refer to the [Docs](TODO)._
-
-## Development setup
-
-Describe how to install all development dependencies and how to run an automated test-suite of some kind. Potentially do this for multiple platforms.
-
-```sh
-make install
-npm test
+```erlang
+application:ensure_all_started(speed_trap).
+Id = {<<"/api/v1/captcha_challenge">>, <<"POST">>}.
+Options = #{bucket_size => 40,                   % difference of peak and base rates
+            refill_interval => timer:seconds(6), % how often the bucket is refilled
+            refill_count => 1,                   % number of tokens to refill
+            delete_when_full => false            % Do not delete bucket when full
+            enforce_rate_limit => true           % OPTIONAL: Whether or not to enforce the rate limit
+           },
+speed_trap:new(Id, Options).                     % ok | raises the bad_options error
+speed_trap:try_pass(Id).                         % {ok, RemainingTokens | rate_limit_not_enforced} | {error, too_many_requests}
 ```
 
-## How to contribute
+In order to modify the rate limiters one can use modify/2:
+```erlang
+NewRefillInterval = timer:seconds(1),
+speed_trap:modify(Id, #{refill_interval => NewRefillInterval}).
+```
 
-See our guide on [contributing](.github/CONTRIBUTING.md).
+In order to delete a rate limiter:
+```erlang
+speed_trap:delete(Id).
+```
 
-## Release History
+## Template rate limiters
+When you do not know upfront all the rate limiters that you need you can add templates for rate limiters and connect them to rate limiter id patterns.
+When a speed trap is not present when calling speed_trap:try_pass/1, speed_trap looks for a pattern
+that matches the supplied id.
+If found a rate limiter with the id is created.
 
-See our [changelog](CHANGELOG.md).
+The template is a tuple of a template identifier and the same options map as used when calling speed_trap:new/2.
+An id pattern is a tuple of a match head and a template identifier for the pattern.
 
-## License
+Say that you want a unique rate limiter (with the same configuration) for each user for a resource called my_resource.
+For the user "Alex" the rate limiter id would be {my_resource, "Alex"}.
 
-Copyright © 2022 Klarna Bank AB
+```erlang
+{templates,
+ #{my_resource_template =>
+  #{bucket_size => 40,
+    refill_interval => 6000,
+    refill_count => 1,
+    delete_when_full => true,
+    enforce_rate_limit => true %% Optional!
+   }
+ }
+},
+{id_patterns,
+ [
+  {
+   {my_resource, '_'},
+    my_resource_template
+  }
+ ]
+}
+```
 
-For license details, see the [LICENSE](LICENSE) file in the root of this project.
+## Development
+In order to build the project simply run `make`.
 
+This repo uses `rebar3 format` to ensure consistent formatting of the codebase.
+If the pipeline fails with:
+```sh
+===> The following files are not properly formatted:
+src/<file>.erl
+```
+Please run `make format` and commit the changes.
 
-<!-- Markdown link & img dfn's -->
-[ci-image]: https://img.shields.io/badge/build-passing-brightgreen?style=flat-square
-[ci-url]: https://github.com/klarna-incubator/TODO
-[license-image]: https://img.shields.io/badge/license-Apache%202-blue?style=flat-square
-[license-url]: http://www.apache.org/licenses/LICENSE-2.0
-[klarna-image]: https://img.shields.io/badge/%20-Developed%20at%20Klarna-black?style=flat-square&labelColor=ffb3c7&logo=klarna&logoColor=black
-[klarna-url]: https://klarna.github.io
+## Running tests
+```bash
+make test
+```
