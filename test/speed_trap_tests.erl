@@ -17,6 +17,18 @@ new_blocked_test() ->
   ?assertEqual({error, blocked}, speed_trap:try_pass(Id)),
   application:stop(speed_trap).
 
+new_does_not_require_override_test() ->
+  application:ensure_all_started(speed_trap),
+  Id = unique_id(?FUNCTION_NAME),
+  Options =
+    #{bucket_size => 10,
+      refill_interval => 1,
+      refill_count => 1,
+      delete_when_full => false},
+  ok = speed_trap:new(Id, Options),
+  ?assertEqual({ok, Options#{override => none}}, speed_trap:options(Id)),
+  application:stop(speed_trap).
+
 try_pass_bucket_test() ->
   application:ensure_all_started(speed_trap),
   Id = unique_id(?FUNCTION_NAME),

@@ -72,7 +72,12 @@
 new(Id, Options) ->
   case speed_trap_options:validate(Options, _MandatoryOptions = true) of
     ok ->
-      speed_trap_token_bucket:new(Id, Options);
+      case maps:is_key(override, Options) of
+        true ->
+          speed_trap_token_bucket:new(Id, Options);
+        false ->
+          speed_trap_token_bucket:new(Id, Options#{override => none})
+      end;
     Errors ->
       Errors
   end.
