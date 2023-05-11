@@ -125,7 +125,7 @@ bucket(Id) ->
       {ok, {Options, Bucket}}
   end.
 
--spec active_buckets() -> [{speed_trap:id(), speed_trap:stored_options()}].
+-spec active_buckets() -> [{speed_trap:id(), speed_trap:active_bucket_options()}].
 active_buckets() ->
   Ids = ets:select(?ETS_TABLE, ets:fun2ms(fun({Id, {_Options, _Ctr}}) -> Id end)),
   lists:filtermap(fun(Id) ->

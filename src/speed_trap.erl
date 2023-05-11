@@ -48,7 +48,7 @@
     refill_interval := refill_interval(),
     refill_count := refill_count(),
     delete_when_full := boolean(),
-    override := override()}.
+    override => override()}.
 -type stored_options() ::
   #{bucket_size := bucket_size(),
     refill_interval := refill_interval(),
@@ -61,10 +61,17 @@
     refill_count => refill_count(),
     delete_when_full => boolean(),
     override => override()}.
+-type active_bucket_options() ::
+  #{bucket_size := speed_trap:bucket_size(),
+    refill_interval := speed_trap:refill_interval(),
+    refill_count := speed_trap:refill_count(),
+    delete_when_full := boolean(),
+    override := override(),
+    tokens := non_neg_integer() | none | infinity}.
 
 -export_type([id/0, bucket_size/0, refill_interval/0, refill_count/0, options/0, stored_options/0,
               modify_options/0, already_exists/0, no_such_speed_trap/0, too_many_requests/0,
-              try_pass_success/0, blocked/0]).
+              try_pass_success/0, blocked/0, active_bucket_options/0]).
 
 %% @doc Setup a new TokenBucket.
 %% This is where a rate_limiter is setup for any arbitrary identifier.
@@ -87,7 +94,7 @@ new(Id, Options) ->
 delete(Id) ->
   speed_trap_token_bucket:delete(Id).
 
--spec all() -> [{id(), stored_options()}].
+-spec all() -> [{id(), active_bucket_options()}].
 all() ->
   speed_trap_token_bucket:active_buckets().
 
