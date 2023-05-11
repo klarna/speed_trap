@@ -90,8 +90,8 @@ get_token(Id) ->
   case bucket(Id) of
     {error, no_such_speed_trap} = E ->
       E;
-    {ok, {Options, Blocked, Ctr}} ->
-      do_get_token(Options, Blocked, Ctr)
+    {ok, {Options, Ctr}} ->
+      do_get_token(Options, Ctr)
   end.
 
 -spec return_token(speed_trap:id()) -> ok | {error, speed_trap:no_such_speed_trap()}.
@@ -99,7 +99,7 @@ return_token(Id) ->
   case bucket(Id) of
     {error, no_such_speed_trap} = E ->
       E;
-    {ok, {Options, _Blocked, Ctr}} ->
+    {ok, {Options, Ctr}} ->
       #{bucket_size := BucketSize, delete_when_full := DeleteWhenFull} = Options,
       add_token(Ctr, BucketSize, 1, DeleteWhenFull)
   end.
@@ -110,19 +110,19 @@ options(Id) ->
   case bucket(Id) of
     {error, no_such_speed_trap} = E ->
       E;
-    {ok, {Options, _Blocked, _Ctr}} ->
+    {ok, {Options, _Ctr}} ->
       {ok, Options}
   end.
 
 -spec bucket(speed_trap:id()) ->
-              {ok, {speed_trap:stored_options(), boolean(), token_bucket()}} |
+              {ok, {speed_trap:stored_options(), token_bucket()}} |
               {error, speed_trap:no_such_speed_trap()}.
 bucket(Id) ->
   case ets:lookup(?ETS_TABLE, Id) of
     [] ->
       {error, no_such_speed_trap};
-    [{_Id, {Options, Blocked, Bucket}}] ->
-      {ok, {Options, Blocked, Bucket}}
+    [{_Id, {Options, Bucket}}] ->
+      {ok, {Options, Bucket}}
   end.
 
 -spec active_buckets() -> [{speed_trap:id(), speed_trap:stored_options()}].
@@ -130,7 +130,7 @@ active_buckets() ->
   Ids = gen_server:call(?SERVER, active_ids), %% Timeout?
   lists:filtermap(fun(Id) ->
                      case bucket(Id) of
-                       {ok, {Opts, _Blocked, Bucket}} ->
+                       {ok, {Opts, Bucket}} ->
                          {true, {Id, Opts#{tokens => atomics:get(Bucket, 1)}}};
                        {error, no_such_speed_trap} ->
                          false
@@ -170,9 +170,9 @@ handle_call({modify, Id, NewOptions}, _From, Timers) ->
   case maps:find(Id, Timers) of
     {ok, OldTimer} ->
       timer:cancel(OldTimer),
-      {ok, {OldOptions, _Blocked, Ctr}} = bucket(Id),
+      {ok, {OldOptions, Ctr}} = bucket(Id),
       Options = maps:merge(OldOptions, NewOptions),
-      case speed_trap_options:check_bad_combination(Options) of
+      case speed_trap_options:validate(Options, _Required = false) of
         ok ->
           Timer = init_trap(Id, Ctr, Options),
           {reply, ok, maps:update(Id, Timer, Timers)};
@@ -251,18 +251,16 @@ init_trap(Id, Ctr, Options) ->
                          ?MODULE,
                          add_token,
                          [Ctr, BucketSize, RefillCount, DeleteWhenFull]),
-  IsBlocked = speed_trap_options:is_blocked(Options),
-  true = ets:insert(?ETS_TABLE, {Id, {Options#{blocked => IsBlocked}, IsBlocked, Ctr}}),
+  true = ets:insert(?ETS_TABLE, {Id, {Options, Ctr}}),
   Timer.
 
 ctr_to_id(Ctr) ->
-  [Id] =
-    ets:select(?ETS_TABLE, ets:fun2ms(fun({Id, {_Options, _Blocked, C}}) when C =:= Ctr -> Id end)),
+  [Id] = ets:select(?ETS_TABLE, ets:fun2ms(fun({Id, {_Options, C}}) when C =:= Ctr -> Id end)),
   Id.
 
-do_get_token(_Options, true = _Blocked, _Ctr) ->
+do_get_token(#{override := blocked}, _Ctr) ->
   {error, blocked};
-do_get_token(Options, false = _Blocked, Ctr) ->
+do_get_token(Options, Ctr) ->
   case atomics:sub_get(Ctr, 1, 1) of
     N when N >= 0 ->
       {ok, N};
