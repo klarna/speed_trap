@@ -151,7 +151,7 @@ init([]) ->
   {ok, #{}}.
 
 -spec handle_call(term(), {pid(), term()}, state()) -> {reply, ok | {error, term()}, state()}.
-handle_call({register, Id, #{bucket_size := BucketSize} = Options}, _From, Timers) ->
+handle_call({register, Id, Options}, _From, Timers) ->
   HasOverride = speed_trap_options:has_override(Options),
   case maps:is_key(Id, Timers) of
     true ->
@@ -160,9 +160,7 @@ handle_call({register, Id, #{bucket_size := BucketSize} = Options}, _From, Timer
       undefined = init_trap(Id, _Ctr = undefined, Options),
       {reply, ok, Timers};
     false ->
-      Ctr = atomics:new(1, [{signed, true}]),
-      ok = atomics:put(Ctr, 1, BucketSize),
-      Timer = init_trap(Id, Ctr, Options),
+      Timer = create_counter_and_timer(Id, Options),
       {reply, ok, maps:put(Id, Timer, Timers)}
   end;
 handle_call({delete, Id}, _From, Timers) ->
@@ -285,10 +283,7 @@ do_modify(Id, OldOptions, NewOptions, Ctr, Timers) ->
           undefined = init_trap(Id, undefined, Options),
           {reply, ok, maps:remove(Id, Timers)};
         ok when Ctr =:= undefined ->
-          NewCtr = atomics:new(1, [{signed, true}]),
-          #{bucket_size := BucketSize} = Options,
-          ok = atomics:put(NewCtr, 1, BucketSize),
-          Timer = init_trap(Id, NewCtr, Options),
+          Timer = create_counter_and_timer(Id, Options),
           {reply, ok, maps:update(Id, Timer, Timers)};
         ok ->
           Timer = init_trap(Id, Ctr, Options),
@@ -304,12 +299,15 @@ do_modify(Id, OldOptions, NewOptions, Ctr, Timers) ->
           undefined = init_trap(Id, undefined, Options),
           {reply, ok, maps:remove(Id, Timers)};
         false ->
-          NewCtr = atomics:new(1, [{signed, true}]),
-          #{bucket_size := BucketSize} = Options,
-          ok = atomics:put(NewCtr, 1, BucketSize),
-          Timer = init_trap(Id, NewCtr, Options),
+          Timer = create_counter_and_timer(Id, Options),
           {reply, ok, maps:put(Id, Timer, Timers)}
       end;
     error ->
       {reply, {error, no_such_speed_trap}, Timers}
   end.
+
+create_counter_and_timer(Id, Options) ->
+  NewCtr = atomics:new(1, [{signed, true}]),
+  #{bucket_size := BucketSize} = Options,
+  ok = atomics:put(NewCtr, 1, BucketSize),
+  init_trap(Id, NewCtr, Options).
