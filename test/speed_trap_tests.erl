@@ -504,7 +504,7 @@ is_blocked_test() ->
 
 is_rate_limit_enforced_test() ->
   ?assertEqual(false, speed_trap_options:is_rate_limit_enforced(#{override => not_enforced})),
-  ?assertEqual(true, speed_trap_options: is_rate_limit_enforced(#{override => blocked})),
+  ?assertEqual(true, speed_trap_options:is_rate_limit_enforced(#{override => blocked})),
   ?assertEqual(true, speed_trap_options:is_rate_limit_enforced(#{override => none})).
 
 unique_id(Name) ->
