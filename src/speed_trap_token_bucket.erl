@@ -260,15 +260,12 @@ ctr_to_id(Ctr) ->
 
 do_get_token(#{override := blocked}, _Ctr) ->
   {error, blocked};
-do_get_token(Options, Ctr) ->
+do_get_token(#{override := Override}, Ctr) ->
   case atomics:sub_get(Ctr, 1, 1) of
     N when N >= 0 ->
       {ok, N};
+    _ when Override =:= not_enforced ->
+      {ok, rate_limit_not_enforced};
     _ ->
-      case speed_trap_options:is_rate_limit_enforced(Options) of
-        true ->
-          {error, too_many_requests};
-        false ->
-          {ok, rate_limit_not_enforced}
-      end
+      {error, too_many_requests}
   end.

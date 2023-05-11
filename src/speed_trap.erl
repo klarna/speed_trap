@@ -48,7 +48,7 @@
     refill_interval := refill_interval(),
     refill_count := refill_count(),
     delete_when_full := boolean(),
-    override := override()}.
+    override => override()}.
 -type stored_options() ::
   #{bucket_size := bucket_size(),
     refill_interval := refill_interval(),

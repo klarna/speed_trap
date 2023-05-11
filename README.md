@@ -30,7 +30,9 @@ A token bucket rate limiter is defined by four mandatory parameters:
 * `refill_interval`, milliseconds, how often the bucket is refilled with tokens
 * `refill_count`, positive integer, how many tokens are added every refill
 * `delete_when_full`, boolean, whether or not to delete the bucket when it's filled up
-* `override`, none | not_enforced | blocked, whether or not to enforce the rate limit or whether or not all calls should be blocked altogether.
+
+Optional parameters:
+* `override`, `none | not_enforced | blocked`, whether to override the rate limiter to always allow or block requests. `not_enforced` behaves the same as any other regular rate limiter with the exception that once the bucket is empty, one would receive `{ok, rate_limit_not_enforced}` rather than `{error, too_many_requests}`. This features allows a soft-launch of any rate limiter and allows one to tweak the limits before enforcing the rate limiter. `blocked` on the other hand will always return `{error, blocked}` and essentially short circuits that way. This can be useful when you truly don't want to accept any requests any more for this particular rate limiter.
 
 A new speed trap always starts with a full bucket.
 
