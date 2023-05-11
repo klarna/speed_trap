@@ -431,9 +431,16 @@ bad_options_test() ->
     #{bucket_size => 1,
       refill_interval => 100,
       refill_count => 1,
+      delete_when_full => foo},
+  ?assertEqual({error, {bad_options, [{delete_when_full, foo}]}},
+               speed_trap:new(<<"id">>, BadOpts13)),
+  BadOpts14 =
+    #{bucket_size => 1,
+      refill_interval => 100,
+      refill_count => 1,
       delete_when_full => false,
       override => foo},
-  ?assertEqual({error, {bad_options, [{override, foo}]}}, speed_trap:new(<<"id">>, BadOpts13)),
+  ?assertEqual({error, {bad_options, [{override, foo}]}}, speed_trap:new(<<"id">>, BadOpts14)),
   application:stop(speed_trap).
 
 delete_when_full_test() ->
@@ -489,6 +496,16 @@ block_non_existing_test() ->
   Id = unique_id(?FUNCTION_NAME),
   ?assertEqual({error, no_such_speed_trap}, speed_trap:block(Id)),
   application:stop(speed_trap).
+
+is_blocked_test() ->
+  ?assertEqual(true, speed_trap_options:is_blocked(#{override => blocked})),
+  ?assertEqual(false, speed_trap_options:is_blocked(#{override => not_enforced})),
+  ?assertEqual(false, speed_trap_options:is_blocked(#{override => none})).
+
+is_rate_limit_enforced_test() ->
+  ?assertEqual(false, speed_trap_options:is_rate_limit_enforced(#{override => not_enforced})),
+  ?assertEqual(true, speed_trap_options: is_rate_limit_enforced(#{override => blocked})),
+  ?assertEqual(true, speed_trap_options:is_rate_limit_enforced(#{override => none})).
 
 unique_id(Name) ->
   {Name, unique_resource()}.
