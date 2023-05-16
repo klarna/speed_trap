@@ -497,16 +497,6 @@ block_non_existing_test() ->
   ?assertEqual({error, no_such_speed_trap}, speed_trap:block(Id)),
   application:stop(speed_trap).
 
-is_blocked_test() ->
-  ?assertEqual(true, speed_trap_options:is_blocked(#{override => blocked})),
-  ?assertEqual(false, speed_trap_options:is_blocked(#{override => not_enforced})),
-  ?assertEqual(false, speed_trap_options:is_blocked(#{override => none})).
-
-is_rate_limit_enforced_test() ->
-  ?assertEqual(false, speed_trap_options:is_rate_limit_enforced(#{override => not_enforced})),
-  ?assertEqual(true, speed_trap_options:is_rate_limit_enforced(#{override => blocked})),
-  ?assertEqual(true, speed_trap_options:is_rate_limit_enforced(#{override => none})).
-
 unique_id(Name) ->
   {Name, unique_resource()}.
 
