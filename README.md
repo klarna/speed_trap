@@ -1,9 +1,10 @@
 # speed_trap
 A basic Token Bucket rate limiter written in Erlang with no external dependencies.
 
-[![Build Status][ci-image]][ci-url]
-[![License][license-image]][license-url]
-[![Developed at Klarna][klarna-image]][klarna-url]
+[![Build](https://github.com/klarna-incubator/speed_trap/actions/workflows/build.yml/badge.svg)](https://github.com/klarna-incubator/speed_trap/actions/workflows/build.yml)
+[![License](https://camo.githubusercontent.com/7b7d3d8a196e3828ccb78dfedc3c626aab728508cbd8e1cfbe27ef9c8216229e/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f6c6963656e73652d417061636865253230322d626c75653f7374796c653d666c61742d737175617265)](http://www.apache.org/licenses/LICENSE-2.0)
+![GitHub last commit](https://img.shields.io/github/last-commit/klarna-incubator/speed_trap?style=flat-square)
+[![Developed at Klarna](https://camo.githubusercontent.com/3b04c776d2140980743e386cf674fa4d3ad9dad97a2d514833f47eb77a5bb37e/68747470733a2f2f736869656c64732e696f2f62616467652f446576656c6f70656425323061742532304b6c61726e612d626c61636b3f6c6f676f3d6b6c61726e61)](https://github.com/klarna-incubator)
 
 ## Features
 A basic [Token Bucket](https://en.wikipedia.org/wiki/Token_bucket) based rate limiter for Erlang.
