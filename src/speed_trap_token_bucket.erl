@@ -37,6 +37,7 @@
          active_buckets/0]).
 %% Timer callback
 -export([add_token/4]).
+-export([sync/0]).
 
 -behaviour(gen_server).
 
@@ -138,6 +139,10 @@ active_buckets() ->
                   end,
                   Ids).
 
+-spec sync() -> ok.
+sync() ->
+  ok = gen_server:call(?SERVER, sync).
+
 %%-----------------------------------------------------------------------------
 %% gen_server callbacks
 %%-----------------------------------------------------------------------------
@@ -158,13 +163,11 @@ handle_call({register, Id, #{bucket_size := BucketSize} = Options}, _From, Timer
       {reply, ok, maps:put(Id, Timer, Timers)}
   end;
 handle_call({delete, Id}, _From, Timers) ->
-  case maps:take(Id, Timers) of
-    {Timer, RemainingTimers} ->
-      timer:cancel(Timer),
-      true = ets:delete(?ETS_TABLE, Id),
+  case do_delete(Id, Timers) of
+    {ok, RemainingTimers} ->
       {reply, ok, RemainingTimers};
-    error ->
-      {reply, {error, no_such_speed_trap}, Timers}
+    {error, no_such_speed_trap} = Error ->
+      {reply, Error, Timers}
   end;
 handle_call({modify, Id, NewOptions}, _From, Timers) ->
   case maps:find(Id, Timers) of
@@ -185,10 +188,42 @@ handle_call({modify, Id, NewOptions}, _From, Timers) ->
 handle_call(active_ids, _From, Timers) ->
   Ids = maps:keys(Timers),
   {reply, Ids, Timers};
+handle_call(sync, _From, Timers) ->
+  {reply, ok, Timers};
 handle_call(_Request, _From, State) ->
   {reply, {error, no_such_call}, State}.
 
 -spec handle_cast(any(), state()) -> {noreply, state()}.
+handle_cast({add_token, Ctr, BucketSize, RefillCount, DeleteWhenFull}, Timers) ->
+  case atomics:get(Ctr, 1) of
+    N when N =:= BucketSize andalso DeleteWhenFull ->
+      Id = ctr_to_id(Ctr),
+      case do_delete(Id, Timers) of
+        {ok, RemainingTimers} ->
+          {noreply, RemainingTimers};
+        {error, no_such_speed_trap} ->
+          {noreply, Timers}
+      end;
+    N when N =< 0 ->
+      atomics:put(Ctr, 1, RefillCount),
+      {noreply, Timers};
+    N when N < BucketSize ->
+      %% Do not overflow the bucket
+      RefillN = min(RefillCount, BucketSize - N),
+      case atomics:add_get(Ctr, 1, RefillN) of
+        M when M < RefillCount ->
+          %% After a refill the number of tokens in the bucket should be in
+          %% the [RefillCount, BucketSize] range. If it is lower than RefillCount
+          %% right after the refill it means that a user has consumed some tokens
+          %% concurrently between our first get and the add_get the bucket.
+          atomics:put(Ctr, 1, RefillCount),
+          {noreply, Timers};
+        _M ->
+          {noreply, Timers}
+      end;
+    _N ->
+      {noreply, Timers} % the bucket is already full
+  end;
 handle_cast(_Request, Timers) ->
   {noreply, Timers}.
 
@@ -202,33 +237,8 @@ handle_info(_Request, Timers) ->
 -spec add_token(token_bucket(), speed_trap:bucket_size(), speed_trap:refill_count(), boolean()) ->
                  ok.
 add_token(Ctr, BucketSize, RefillCount, DeleteWhenFull) ->
-  case atomics:get(Ctr, 1) of
-    N when N =:= BucketSize andalso DeleteWhenFull ->
-      Id = ctr_to_id(Ctr),
-      case delete(Id) of
-        ok ->
-          ok;
-        {error, no_such_speed_trap} ->
-          ok
-      end;
-    N when N =< 0 ->
-      atomics:put(Ctr, 1, RefillCount);
-    N when N < BucketSize ->
-      %% Do not overflow the bucket
-      RefillN = min(RefillCount, BucketSize - N),
-      case atomics:add_get(Ctr, 1, RefillN) of
-        M when M < RefillCount ->
-          %% After a refill the number of tokens in the bucket should be in
-          %% the [RefillCount, BucketSize] range. If it is lower than RefillCount
-          %% right after the refill it means that a user has consumed some tokens
-          %% concurrently between our first get and the add_get the bucket.
-          atomics:put(Ctr, 1, RefillCount);
-        _M ->
-          ok
-      end;
-    _N ->
-      ok % the bucket is already full
-  end.
+  gen_server:cast(?SERVER, {add_token, Ctr, BucketSize, RefillCount, DeleteWhenFull}),
+  ok.
 
 %%-----------------------------------------------------------------------------
 %% Internal functions
@@ -268,4 +278,14 @@ do_get_token(#{override := Override}, Ctr) ->
       {ok, rate_limit_not_enforced};
     _ ->
       {error, too_many_requests}
+  end.
+
+do_delete(Id, Timers) ->
+  case maps:take(Id, Timers) of
+    {Timer, RemainingTimers} ->
+      timer:cancel(Timer),
+      true = ets:delete(?ETS_TABLE, Id),
+      {ok, RemainingTimers};
+    error ->
+      {error, no_such_speed_trap}
   end.

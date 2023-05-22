@@ -72,6 +72,7 @@ try_pass_all_test() ->
   Ids = [Id1, Id2],
   ?assertEqual(lists:duplicate(5, ok), [speed_trap:try_pass_all(Ids) || _ <- lists:seq(1, 5)]),
   ?assertEqual({error, Id2, too_many_requests}, speed_trap:try_pass_all(Ids)),
+  ok = speed_trap_token_bucket:sync(),
   ?assertEqual(expect_ok(5), [speed_trap:try_pass(Id1) || _ <- lists:seq(1, 5)]),
   ?assertEqual({error, too_many_requests}, speed_trap:try_pass(Id1)),
   application:stop(speed_trap).
@@ -99,6 +100,7 @@ try_pass_all_block_one_test() ->
   ok = speed_trap:block(Id2),
   ?assertEqual({error, Id2, blocked}, speed_trap:try_pass_all(Ids)),
   ?assertEqual({error, blocked}, speed_trap:try_pass(Id2)),
+  speed_trap_token_bucket:sync(),
   ?assertEqual(expect_ok(5), [speed_trap:try_pass(Id1) || _ <- lists:seq(1, 5)]),
   ?assertEqual({error, too_many_requests}, speed_trap:try_pass(Id1)),
   application:stop(speed_trap).
@@ -477,10 +479,13 @@ enforce_rate_limit_test() ->
 block_test() ->
   application:ensure_all_started(speed_trap),
   Id = unique_id(?FUNCTION_NAME),
+  BucketSize = 100,
+  RefillInterval = 1000_000,
+  RefillCount = 100,
   Options =
-    #{bucket_size => 100,
-      refill_interval => 1000,
-      refill_count => 100,
+    #{bucket_size => BucketSize,
+      refill_interval => RefillInterval,
+      refill_count => RefillCount,
       delete_when_full => false,
       override => none},
   ok = speed_trap:new(Id, Options),
@@ -495,6 +500,35 @@ block_non_existing_test() ->
   application:ensure_all_started(speed_trap),
   Id = unique_id(?FUNCTION_NAME),
   ?assertEqual({error, no_such_speed_trap}, speed_trap:block(Id)),
+  application:stop(speed_trap).
+
+return_token_refilled_concurrently_test() ->
+  application:ensure_all_started(speed_trap),
+  Id = unique_id(?FUNCTION_NAME),
+  BucketSize = 100,
+  RefillCount = 100,
+  DeleteWhenFull = false,
+  Options =
+    #{bucket_size => BucketSize,
+      refill_interval => 25_000,
+      refill_count => RefillCount,
+      delete_when_full => DeleteWhenFull,
+      override => none},
+  ok = speed_trap:new(Id, Options),
+  ?assertEqual(expect_ok(25, BucketSize), [speed_trap:try_pass(Id) || _ <- lists:seq(1, 25)]),
+  {ok, {_Options, Ctr}} = speed_trap_token_bucket:bucket(Id),
+  %% We don't actually need to wait for the token to be refilled but
+  %% can just pretend the timer fired this is good enough to ensure a
+  %% semi-concurrent call of return_token/1 does not set the bucket to 1
+  speed_trap_token_bucket:add_token(Ctr, BucketSize, RefillCount, DeleteWhenFull),
+  [{Id, OptsWithToken}] = speed_trap:all(),
+  ?assertEqual(100, maps:get(tokens, OptsWithToken)),
+  ?assertEqual(expect_ok(25, BucketSize), [speed_trap:try_pass(Id) || _ <- lists:seq(1, 25)]),
+  ?assertEqual({ok, 74}, speed_trap:try_pass(Id)),
+  ok = speed_trap_token_bucket:return_token(Id),
+  [{Id, NewOptsWithToken}] = speed_trap:all(),
+  %% Ensure bucket was not set to 1 but rather to 75 (74 + 1 returned token)
+  ?assertEqual(75, maps:get(tokens, NewOptsWithToken)),
   application:stop(speed_trap).
 
 unique_id(Name) ->
