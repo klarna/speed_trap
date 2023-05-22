@@ -98,6 +98,12 @@ try_pass(Id) ->
   AllowCreationFromTemplate = true,
   do_try_pass(Id, AllowCreationFromTemplate).
 
+%% @doc If any of the ids, do not pass
+%% then there's a small chance that we end up with a RefillCount + 1 token
+%% if the timer has fired in between the timer calling speed_trap_token_bucket:add_token/4
+%% and us returning the token that we have just grabbed for the speed_traps which we successfully
+%% managed to take a token for.
+%% This way, you will end up with RefillCount + 1 token
 -spec try_pass_all([id()]) -> try_pass_all_result().
 try_pass_all(Ids) ->
   try_pass_all(Ids, []).
