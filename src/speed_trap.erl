@@ -48,19 +48,22 @@
     refill_interval := refill_interval(),
     refill_count := refill_count(),
     delete_when_full := boolean(),
-    override := override()}.
+    override := override(),
+    _ => any()}.
 -type stored_options() ::
   #{bucket_size := bucket_size(),
     refill_interval := refill_interval(),
     refill_count := refill_count(),
     delete_when_full := boolean(),
-    override := override()}.
+    override := override(),
+    _ => any()}.
 -type modify_options() ::
   #{bucket_size => bucket_size(),
     refill_interval => refill_interval(),
     refill_count => refill_count(),
     delete_when_full => boolean(),
-    override => override()}.
+    override => override(),
+    _ => any()}.
 
 -export_type([id/0, bucket_size/0, refill_interval/0, refill_count/0, options/0, stored_options/0,
               modify_options/0, already_exists/0, no_such_speed_trap/0, too_many_requests/0,
@@ -140,8 +143,8 @@ do_try_pass(Id, AllowCreationFromTemplate) ->
 -spec try_pass_from_template(id()) -> try_pass_result().
 try_pass_from_template(Id) ->
   case speed_trap_template:options_from_id(Id) of
-    {ok, Options} ->
-      case new(Id, Options) of
+    {ok, TemplateId, Options} ->
+      case new(Id, Options#{template_id => TemplateId}) of
         ok ->
           do_try_pass(Id, false);
         {error, already_exists} ->
