@@ -501,6 +501,62 @@ block_non_existing_test() ->
   ?assertEqual({error, no_such_speed_trap}, speed_trap:block(Id)),
   application:stop(speed_trap).
 
+return_token_adds_an_additional_token_to_the_bucket_test() ->
+  application:ensure_all_started(speed_trap),
+  Id = unique_id(?FUNCTION_NAME),
+  BucketSize = 100,
+  RefillCount = 10,
+  DeleteWhenFull = false,
+  Options =
+    #{bucket_size => BucketSize,
+      refill_interval => 25_000,
+      refill_count => RefillCount,
+      delete_when_full => DeleteWhenFull,
+      override => none},
+  ok = speed_trap:new(Id, Options),
+  ?assertEqual(expect_ok(BucketSize), [speed_trap:try_pass(Id) || _ <- lists:seq(1, BucketSize)]),
+  {ok, {_Options, Ctr}} = speed_trap_token_bucket:bucket(Id),
+  %% We don't actually need to wait for the token to be refilled but
+  %% can just pretend the timer fired this is good enough to ensure a
+  %% semi-concurrent call of return_token/1 does not set the bucket to 1
+  speed_trap_token_bucket:add_token(Ctr, BucketSize, RefillCount, DeleteWhenFull),
+  [{Id, OptsWithToken}] = speed_trap:all(),
+  ?assertEqual(RefillCount, maps:get(tokens, OptsWithToken)),
+  ok = speed_trap_token_bucket:return_token(Id),
+  [{Id, NewOptsWithToken}] = speed_trap:all(),
+  ?assertEqual(RefillCount + 1, maps:get(tokens, NewOptsWithToken)),
+  application:stop(speed_trap).
+
+return_token_adds_an_additional_token_to_the_bucket_and_can_still_be_deleted_test() ->
+  application:ensure_all_started(speed_trap),
+  Id = unique_id(?FUNCTION_NAME),
+  BucketSize = 100,
+  RefillCount = 100,
+  DeleteWhenFull = false,
+  Options =
+    #{bucket_size => BucketSize,
+      refill_interval => 25_000,
+      refill_count => RefillCount,
+      delete_when_full => DeleteWhenFull,
+      override => none},
+  ok = speed_trap:new(Id, Options),
+  ?assertEqual(expect_ok(BucketSize), [speed_trap:try_pass(Id) || _ <- lists:seq(1, BucketSize)]),
+  {ok, {_Options, Ctr}} = speed_trap_token_bucket:bucket(Id),
+  %% We don't actually need to wait for the token to be refilled but
+  %% can just pretend the timer fired this is good enough to ensure a
+  %% semi-concurrent call of return_token/1 does not set the bucket to 1
+  speed_trap_token_bucket:add_token(Ctr, BucketSize, RefillCount, DeleteWhenFull),
+  [{Id, OptsWithToken}] = speed_trap:all(),
+  ?assertEqual(RefillCount, maps:get(tokens, OptsWithToken)),
+  ok = speed_trap_token_bucket:return_token(Id),
+  [{Id, NewOptsWithToken}] = speed_trap:all(),
+  ?assertEqual(RefillCount + 1, maps:get(tokens, NewOptsWithToken)),
+  NewDeleteWhenFull = true,
+  speed_trap:modify(Id, #{delete_when_full => NewDeleteWhenFull}),
+  speed_trap_token_bucket:add_token(Ctr, BucketSize, RefillCount, NewDeleteWhenFull),
+  ?assertEqual([], speed_trap:all()),
+  application:stop(speed_trap).
+
 unique_id(Name) ->
   {Name, unique_resource()}.
 

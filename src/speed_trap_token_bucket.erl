@@ -99,9 +99,8 @@ return_token(Id) ->
   case bucket(Id) of
     {error, no_such_speed_trap} = E ->
       E;
-    {ok, {Options, Ctr}} ->
-      #{bucket_size := BucketSize, delete_when_full := DeleteWhenFull} = Options,
-      add_token(Ctr, BucketSize, 1, DeleteWhenFull)
+    {ok, {_Options, Ctr}} ->
+      atomics:add(Ctr, 1, 1)
   end.
 
 -spec options(speed_trap:id()) ->
@@ -203,7 +202,7 @@ handle_info(_Request, Timers) ->
                  ok.
 add_token(Ctr, BucketSize, RefillCount, DeleteWhenFull) ->
   case atomics:get(Ctr, 1) of
-    N when N =:= BucketSize andalso DeleteWhenFull ->
+    N when N >= BucketSize andalso DeleteWhenFull ->
       Id = ctr_to_id(Ctr),
       case delete(Id) of
         ok ->
