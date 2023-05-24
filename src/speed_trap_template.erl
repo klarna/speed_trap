@@ -1,24 +1,33 @@
 -module(speed_trap_template).
 
--export([init/0, cleanup/0, options_from_id/1]).
+-export([init/0, init/2, cleanup/0, options_from_id/1, current_id_patterns/0, current_templates/0]).
 
 -type id_pattern() :: {bucket_id_pattern(), id()}.
 -type id() :: term().
 -type bucket_id_pattern() :: term().
+-type templates() :: {id(), speed_trap:options()}.
 
 -define(PTERM_MATCHSPEC, {speed_trap, match_spec}).
 -define(PTERM_TEMPLATES, {speed_trap, templates}).
+-define(PTERM_ID_PATTERNS, {speed_trap, id_patterns}).
+
+-export_type([id/0, templates/0]).
 
 %% ---------------------------------------------------------------------------
 %% API
 -spec init() -> ok | {error, term()}.
 init() ->
+  Templates = application:get_env(speed_trap, templates, #{}),
+  IdPatterns = application:get_env(speed_trap, id_patterns, []),
+  init(Templates, IdPatterns).
+
+-spec init(#{id() => speed_trap:options()}, [id_pattern()]) -> ok | {error, term()}.
+init(Templates, IdPatterns) ->
   try
-    Templates = application:get_env(speed_trap, templates, #{}),
-    KeyPatterns = application:get_env(speed_trap, id_patterns, []),
     check_templates(Templates),
-    check_id_patterns(KeyPatterns, Templates),
-    MatchSpec = to_match_spec(KeyPatterns),
+    check_id_patterns(IdPatterns, Templates),
+    MatchSpec = to_match_spec(IdPatterns),
+    persistent_term:put(?PTERM_ID_PATTERNS, IdPatterns),
     persistent_term:put(?PTERM_MATCHSPEC, MatchSpec),
     persistent_term:put(?PTERM_TEMPLATES, Templates),
     ok
@@ -27,19 +36,28 @@ init() ->
       {error, Reason}
   end.
 
+-spec current_id_patterns() -> [id_pattern()].
+current_id_patterns() ->
+  persistent_term:get(?PTERM_ID_PATTERNS).
+
+-spec current_templates() -> templates().
+current_templates() ->
+  persistent_term:get(?PTERM_TEMPLATES).
+
 -spec cleanup() -> ok.
 cleanup() ->
   persistent_term:erase(?PTERM_MATCHSPEC),
   persistent_term:erase(?PTERM_TEMPLATES),
   ok.
 
--spec options_from_id(speed_trap:id()) -> {ok, speed_trap:options()} | not_found.
+-spec options_from_id(speed_trap:id()) ->
+                       {ok, speed_trap_template:id(), speed_trap:options()} | not_found.
 options_from_id(Id) ->
   MatchSpec = persistent_term:get(?PTERM_MATCHSPEC),
   Templates = persistent_term:get(?PTERM_TEMPLATES),
   case template_from_id(Id, MatchSpec) of
     {ok, TemplateId} ->
-      {ok, maps:get(TemplateId, Templates)};
+      {ok, TemplateId, maps:get(TemplateId, Templates)};
     false ->
       not_found
   end.

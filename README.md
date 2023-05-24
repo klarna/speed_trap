@@ -35,6 +35,9 @@ A token bucket rate limiter is defined by four mandatory parameters:
 Optional parameters:
 * `override`, `none | not_enforced | blocked`, whether to override the rate limiter to always allow or block requests. `not_enforced` behaves the same as any other regular rate limiter with the exception that once the bucket is empty, one would receive `{ok, rate_limit_not_enforced}` rather than `{error, too_many_requests}`. This features allows a soft-launch of any rate limiter and allows one to tweak the limits before enforcing the rate limiter. `blocked` on the other hand will always return `{error, blocked}` and essentially short circuits that way. This can be useful when you truly don't want to accept any requests any more for this particular rate limiter.
 
+You can pass any other key-value pair when configuring a speed trap. They will be present when inspecting speed traps
+(by calling speed_trap:all()).
+
 A new speed trap always starts with a full bucket.
 
 There is several different ways to achieve the same rate limit. For example, one wants to have
@@ -135,6 +138,9 @@ An id pattern is a tuple of a match head and a template identifier for the patte
 
 Say that you want a unique rate limiter (with the same configuration) for each user for a resource called my_resource.
 For the user "Alex" the rate limiter id would be {my_resource, "Alex"}.
+
+A speed trap that is started from a template will have the template id stored with its options.
+This can be used when dynamically reconfiguring speed traps or when debugging a running system.
 
 ```erlang
 {templates,
