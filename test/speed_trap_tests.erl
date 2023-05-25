@@ -231,9 +231,10 @@ modify_bucket_size_change_test() ->
   ok = speed_trap:modify(Id, #{bucket_size => 2}),
   ?assertEqual(expect_ok(2) ++ lists:duplicate(2, {error, too_many_requests}),
                [speed_trap:try_pass(Id) || _ <- lists:seq(1, 4)]),
-  %% The bucket is empty currently and increasing its size should not change that
-  ok = speed_trap:modify(Id, #{bucket_size => 100}),
-  ?assertEqual({error, too_many_requests}, speed_trap:try_pass(Id)),
+  %% The bucket is empty but changing its size should refill it
+  ok = speed_trap:modify(Id, #{bucket_size => 3}),
+  ?assertEqual(expect_ok(3) ++ [{error, too_many_requests}],
+               [speed_trap:try_pass(Id) || _ <- lists:seq(1, 4)]),
   application:stop(speed_trap).
 
 use_template_test() ->
@@ -475,6 +476,7 @@ enforce_rate_limit_test() ->
   ?assertEqual({ok, 0}, speed_trap:try_pass(Id)),
   ?assertEqual({error, too_many_requests}, speed_trap:try_pass(Id)),
   ok = speed_trap:modify(Id, #{override => not_enforced}),
+  ?assertEqual({ok, 0}, speed_trap:try_pass(Id)),
   ?assertEqual({ok, rate_limit_not_enforced}, speed_trap:try_pass(Id)),
   application:stop(speed_trap).
 
@@ -492,7 +494,7 @@ block_test() ->
   ?assertEqual(ok, speed_trap:block(Id)),
   ?assertEqual({error, blocked}, speed_trap:try_pass(Id)),
   ?assertEqual(ok, speed_trap:unblock(Id)),
-  ?assertEqual({ok, 98}, speed_trap:try_pass(Id)),
+  ?assertEqual({ok, 99}, speed_trap:try_pass(Id)),
   application:stop(speed_trap).
 
 block_non_existing_test() ->

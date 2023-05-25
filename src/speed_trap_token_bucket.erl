@@ -90,8 +90,8 @@ get_token(Id) ->
   case bucket(Id) of
     {error, no_such_speed_trap} = E ->
       E;
-    {ok, {Options, Ctr}} ->
-      do_get_token(Options, Ctr)
+    {ok, {Options, Bucket}} ->
+      do_get_token(Options, Bucket)
   end.
 
 -spec return_token(speed_trap:id()) -> ok | {error, speed_trap:no_such_speed_trap()}.
@@ -99,8 +99,8 @@ return_token(Id) ->
   case bucket(Id) of
     {error, no_such_speed_trap} = E ->
       E;
-    {ok, {_Options, Ctr}} ->
-      atomics:add(Ctr, 1, 1)
+    {ok, {_Options, Bucket}} ->
+      atomics:add(Bucket, 1, 1)
   end.
 
 -spec options(speed_trap:id()) ->
@@ -109,7 +109,7 @@ options(Id) ->
   case bucket(Id) of
     {error, no_such_speed_trap} = E ->
       E;
-    {ok, {Options, _Ctr}} ->
+    {ok, {Options, _Bucket}} ->
       {ok, Options}
   end.
 
@@ -126,16 +126,8 @@ bucket(Id) ->
 
 -spec active_buckets() -> [{speed_trap:id(), speed_trap:stored_options()}].
 active_buckets() ->
-  Ids = gen_server:call(?SERVER, active_ids), %% Timeout?
-  lists:filtermap(fun(Id) ->
-                     case bucket(Id) of
-                       {ok, {Opts, Bucket}} ->
-                         {true, {Id, Opts#{tokens => atomics:get(Bucket, 1)}}};
-                       {error, no_such_speed_trap} ->
-                         false
-                     end
-                  end,
-                  Ids).
+  [{Id, Options#{tokens => atomics:get(Bucket, 1)}}
+   || {Id, {Options, Bucket}} <- ets:tab2list(?ETS_TABLE)].
 
 %%-----------------------------------------------------------------------------
 %% gen_server callbacks
@@ -146,44 +138,38 @@ init([]) ->
   {ok, #{}}.
 
 -spec handle_call(term(), {pid(), term()}, state()) -> {reply, ok | {error, term()}, state()}.
-handle_call({register, Id, #{bucket_size := BucketSize} = Options}, _From, Timers) ->
-  case maps:is_key(Id, Timers) of
-    true ->
+handle_call({register, Id, Options}, _From, Timers) ->
+  case bucket(Id) of
+    {ok, _} ->
       {reply, {error, already_exists}, Timers};
-    false ->
-      Ctr = atomics:new(1, [{signed, true}]),
-      ok = atomics:put(Ctr, 1, BucketSize),
-      Timer = init_trap(Id, Ctr, Options),
-      {reply, ok, maps:put(Id, Timer, Timers)}
+    {error, no_such_speed_trap} ->
+      Bucket = atomics:new(1, [{signed, true}]),
+      NewTimers = apply_options(Id, Options, Bucket, Timers),
+      {reply, ok, NewTimers}
   end;
 handle_call({delete, Id}, _From, Timers) ->
-  case maps:take(Id, Timers) of
-    {Timer, RemainingTimers} ->
-      timer:cancel(Timer),
+  case bucket(Id) of
+    {ok, _} ->
+      RemainingTimers = cancel_timer_if_exists(Id, Timers),
       true = ets:delete(?ETS_TABLE, Id),
       {reply, ok, RemainingTimers};
-    error ->
-      {reply, {error, no_such_speed_trap}, Timers}
+    {error, _NoSuchSpeedTrap} = Error ->
+      {reply, Error, Timers}
   end;
 handle_call({modify, Id, NewOptions}, _From, Timers) ->
-  case maps:find(Id, Timers) of
-    {ok, OldTimer} ->
-      timer:cancel(OldTimer),
-      {ok, {OldOptions, Ctr}} = bucket(Id),
+  case bucket(Id) of
+    {ok, {OldOptions, Bucket}} ->
       Options = maps:merge(OldOptions, NewOptions),
       case speed_trap_options:validate(Options, _Required = false) of
         ok ->
-          Timer = init_trap(Id, Ctr, Options),
-          {reply, ok, maps:update(Id, Timer, Timers)};
+          NewTimers = apply_options(Id, Options, Bucket, Timers),
+          {reply, ok, NewTimers};
         {error, _BadOptions} = Error ->
           {reply, Error, Timers}
       end;
-    error ->
-      {reply, {error, no_such_speed_trap}, Timers}
+    {error, _NoSuchSpeedTrap} = Error ->
+      {reply, Error, Timers}
   end;
-handle_call(active_ids, _From, Timers) ->
-  Ids = maps:keys(Timers),
-  {reply, Ids, Timers};
 handle_call(_Request, _From, State) ->
   {reply, {error, no_such_call}, State}.
 
@@ -200,10 +186,10 @@ handle_info(_Request, Timers) ->
 %%-----------------------------------------------------------------------------
 -spec add_token(token_bucket(), speed_trap:bucket_size(), speed_trap:refill_count(), boolean()) ->
                  ok.
-add_token(Ctr, BucketSize, RefillCount, DeleteWhenFull) ->
-  case atomics:get(Ctr, 1) of
+add_token(Bucket, BucketSize, RefillCount, DeleteWhenFull) ->
+  case atomics:get(Bucket, 1) of
     N when N >= BucketSize andalso DeleteWhenFull ->
-      Id = ctr_to_id(Ctr),
+      Id = bucket_to_id(Bucket),
       case delete(Id) of
         ok ->
           ok;
@@ -211,17 +197,17 @@ add_token(Ctr, BucketSize, RefillCount, DeleteWhenFull) ->
           ok
       end;
     N when N =< 0 ->
-      atomics:put(Ctr, 1, RefillCount);
+      atomics:put(Bucket, 1, RefillCount);
     N when N < BucketSize ->
       %% Do not overflow the bucket
       RefillN = min(RefillCount, BucketSize - N),
-      case atomics:add_get(Ctr, 1, RefillN) of
+      case atomics:add_get(Bucket, 1, RefillN) of
         M when M < RefillCount ->
           %% After a refill the number of tokens in the bucket should be in
           %% the [RefillCount, BucketSize] range. If it is lower than RefillCount
           %% right after the refill it means that a user has consumed some tokens
           %% concurrently between our first get and the add_get the bucket.
-          atomics:put(Ctr, 1, RefillCount);
+          atomics:put(Bucket, 1, RefillCount);
         _M ->
           ok
       end;
@@ -232,35 +218,45 @@ add_token(Ctr, BucketSize, RefillCount, DeleteWhenFull) ->
 %%-----------------------------------------------------------------------------
 %% Internal functions
 %%-----------------------------------------------------------------------------
--spec init_trap(speed_trap:id(), atomics:atomics_ref(), speed_trap:options()) -> timer:tref().
-init_trap(Id, Ctr, Options) ->
-  #{bucket_size := BucketSize,
-    refill_interval := RefillInterval,
-    refill_count := RefillCount,
-    delete_when_full := DeleteWhenFull} =
-    Options,
-  case atomics:get(Ctr, 1) of
-    N when N > BucketSize ->
-      ok = atomics:put(Ctr, 1, BucketSize);
-    _ ->
-      ok
-  end,
-  {ok, Timer} =
-    timer:apply_interval(RefillInterval,
-                         ?MODULE,
-                         add_token,
-                         [Ctr, BucketSize, RefillCount, DeleteWhenFull]),
-  true = ets:insert(?ETS_TABLE, {Id, {Options, Ctr}}),
-  Timer.
+-spec apply_options(speed_trap:id(), speed_trap:options(), token_bucket(), state()) -> state().
+apply_options(Id, Options, Bucket, State) ->
+  NewState = cancel_timer_if_exists(Id, State),
+  ets:insert(?ETS_TABLE, {Id, {Options, Bucket}}),
+  case Options of
+    #{override := blocked} ->
+      atomics:put(Bucket, 1, 0),
+      NewState;
+    #{bucket_size := BucketSize,
+      refill_interval := RefillInterval,
+      refill_count := RefillCount,
+      delete_when_full := DeleteWhenFull} ->
+      atomics:put(Bucket, 1, BucketSize),
+      {ok, Timer} =
+        timer:apply_interval(RefillInterval,
+                             ?MODULE,
+                             add_token,
+                             [Bucket, BucketSize, RefillCount, DeleteWhenFull]),
+      State#{Id => Timer}
+  end.
 
-ctr_to_id(Ctr) ->
-  [Id] = ets:select(?ETS_TABLE, ets:fun2ms(fun({Id, {_Options, C}}) when C =:= Ctr -> Id end)),
+-spec cancel_timer_if_exists(speed_trap:id(), state()) -> state().
+cancel_timer_if_exists(Id, State) ->
+  case maps:take(Id, State) of
+    {Timer, NewState} ->
+      timer:cancel(Timer),
+      NewState;
+    error ->
+      State
+  end.
+
+bucket_to_id(Bucket) ->
+  [Id] = ets:select(?ETS_TABLE, ets:fun2ms(fun({Id, {_Options, B}}) when B =:= Bucket -> Id end)),
   Id.
 
-do_get_token(#{override := blocked}, _Ctr) ->
+do_get_token(#{override := blocked}, _Bucket) ->
   {error, blocked};
-do_get_token(#{override := Override}, Ctr) ->
-  case atomics:sub_get(Ctr, 1, 1) of
+do_get_token(#{override := Override}, Bucket) ->
+  case atomics:sub_get(Bucket, 1, 1) of
     N when N >= 0 ->
       {ok, N};
     _ when Override =:= not_enforced ->

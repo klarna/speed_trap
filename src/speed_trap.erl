@@ -114,6 +114,7 @@ try_pass_all(Ids) ->
   try_pass_all(Ids, []).
 
 %% @doc Modify an existing TokenBucket and decrease/increase its size and/or refill interval.
+%% Modifying a TokenBucket always fully refills it.
 -spec modify(id(), modify_options()) ->
               ok | {error, no_such_speed_trap() | speed_trap_options:bad_options()}.
 modify(Id, Options) ->
