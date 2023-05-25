@@ -48,6 +48,7 @@
 
 -define(SERVER, ?MODULE).
 -define(ETS_TABLE, speed_trap).
+-define(BUCKET_IDX, 1).
 
 -type state() :: #{speed_trap:id() => timer:tref()}.
 
@@ -100,7 +101,7 @@ return_token(Id) ->
     {error, no_such_speed_trap} = E ->
       E;
     {ok, {_Options, Bucket}} ->
-      atomics:add(Bucket, 1, 1)
+      atomics:add(Bucket, ?BUCKET_IDX, 1)
   end.
 
 -spec options(speed_trap:id()) ->
@@ -126,7 +127,7 @@ bucket(Id) ->
 
 -spec active_buckets() -> [{speed_trap:id(), speed_trap:stored_options()}].
 active_buckets() ->
-  [{Id, Options#{tokens => atomics:get(Bucket, 1)}}
+  [{Id, Options#{tokens => atomics:get(Bucket, ?BUCKET_IDX)}}
    || {Id, {Options, Bucket}} <- ets:tab2list(?ETS_TABLE)].
 
 %%-----------------------------------------------------------------------------
@@ -187,7 +188,7 @@ handle_info(_Request, Timers) ->
 -spec add_token(token_bucket(), speed_trap:bucket_size(), speed_trap:refill_count(), boolean()) ->
                  ok.
 add_token(Bucket, BucketSize, RefillCount, DeleteWhenFull) ->
-  case atomics:get(Bucket, 1) of
+  case atomics:get(Bucket, ?BUCKET_IDX) of
     N when N >= BucketSize andalso DeleteWhenFull ->
       Id = bucket_to_id(Bucket),
       case delete(Id) of
@@ -197,17 +198,17 @@ add_token(Bucket, BucketSize, RefillCount, DeleteWhenFull) ->
           ok
       end;
     N when N =< 0 ->
-      atomics:put(Bucket, 1, RefillCount);
+      atomics:put(Bucket, ?BUCKET_IDX, RefillCount);
     N when N < BucketSize ->
       %% Do not overflow the bucket
       RefillN = min(RefillCount, BucketSize - N),
-      case atomics:add_get(Bucket, 1, RefillN) of
+      case atomics:add_get(Bucket, ?BUCKET_IDX, RefillN) of
         M when M < RefillCount ->
           %% After a refill the number of tokens in the bucket should be in
           %% the [RefillCount, BucketSize] range. If it is lower than RefillCount
           %% right after the refill it means that a user has consumed some tokens
           %% concurrently between our first get and the add_get the bucket.
-          atomics:put(Bucket, 1, RefillCount);
+          atomics:put(Bucket, ?BUCKET_IDX, RefillCount);
         _M ->
           ok
       end;
@@ -224,13 +225,13 @@ apply_options(Id, Options, Bucket, State) ->
   ets:insert(?ETS_TABLE, {Id, {Options, Bucket}}),
   case Options of
     #{override := blocked} ->
-      atomics:put(Bucket, 1, 0),
+      atomics:put(Bucket, ?BUCKET_IDX, 0),
       NewState;
     #{bucket_size := BucketSize,
       refill_interval := RefillInterval,
       refill_count := RefillCount,
       delete_when_full := DeleteWhenFull} ->
-      atomics:put(Bucket, 1, BucketSize),
+      atomics:put(Bucket, ?BUCKET_IDX, BucketSize),
       {ok, Timer} =
         timer:apply_interval(RefillInterval,
                              ?MODULE,
@@ -256,7 +257,7 @@ bucket_to_id(Bucket) ->
 do_get_token(#{override := blocked}, _Bucket) ->
   {error, blocked};
 do_get_token(#{override := Override}, Bucket) ->
-  case atomics:sub_get(Bucket, 1, 1) of
+  case atomics:sub_get(Bucket, ?BUCKET_IDX, 1) of
     N when N >= 0 ->
       {ok, N};
     _ when Override =:= not_enforced ->
