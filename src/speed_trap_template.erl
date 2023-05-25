@@ -5,7 +5,7 @@
 -type id_pattern() :: {bucket_id_pattern(), id()}.
 -type id() :: term().
 -type bucket_id_pattern() :: term().
--type templates() :: {id(), speed_trap:options()}.
+-type templates() :: #{id() => speed_trap:options()}.
 
 -define(PTERM_MATCHSPEC, {speed_trap, match_spec}).
 -define(PTERM_TEMPLATES, {speed_trap, templates}).
