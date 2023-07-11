@@ -559,6 +559,52 @@ return_token_adds_an_additional_token_to_the_bucket_and_can_still_be_deleted_tes
   ?assertEqual([], speed_trap:all()),
   application:stop(speed_trap).
 
+template_modifications_test() ->
+  Templates =
+    #{t1 =>
+        #{bucket_size => 5,
+          refill_interval => 1000,
+          refill_count => 1,
+          delete_when_full => true,
+          override => none}},
+  KeyPatterns = [{{a, '_'}, t1}, {{'_', d}, t1}],
+  application:set_env(speed_trap, templates, Templates),
+  application:set_env(speed_trap, id_patterns, KeyPatterns),
+  application:ensure_all_started(speed_trap),
+  Id = {a, b},
+  NewBucketSize = 3,
+  %% Modify a non-existent bucket, which can be created from the template
+  ?assertEqual(ok, speed_trap:modify(Id, #{bucket_size => NewBucketSize})),
+  %% Make sure it is not active
+  ?assertEqual([], speed_trap:all()),
+  %% Check that the modification is stored
+  ?assertMatch({ok, #{bucket_size := NewBucketSize}},
+               speed_trap_token_bucket:get_template_modification(Id)),
+  ?assertEqual({ok, NewBucketSize - 1}, speed_trap:try_pass(Id)),
+  NewRefillInt = 10,
+  ?assertEqual(ok, speed_trap:modify(Id, #{refill_interval => NewRefillInt})),
+  %% Let speed_trap perform delete_when_full
+  timer:sleep(50),
+  ?assertEqual([], speed_trap:all()),
+  %% The modifications should be stored still
+  ?assertMatch({ok, #{bucket_size := NewBucketSize, refill_interval := NewRefillInt}},
+               speed_trap_token_bucket:get_template_modification(Id)),
+  ?assertEqual(ok, speed_trap_token_bucket:delete_template_modifications()),
+  ?assertEqual({error, not_found}, speed_trap_token_bucket:get_template_modification(Id)),
+  %% Test that manual deletion deletes modification
+  ?assertEqual(ok,
+               speed_trap:modify(Id, #{bucket_size => NewBucketSize, delete_when_full => false})),
+  ?assertEqual([], speed_trap:all()),
+  ?assertMatch({ok, #{bucket_size := NewBucketSize}},
+               speed_trap_token_bucket:get_template_modification(Id)),
+  %% Still returns error that there is no such speed_trap
+  ?assertEqual({error, no_such_speed_trap}, speed_trap:delete(Id)),
+  %% But deletes modification
+  ?assertEqual({error, not_found}, speed_trap_token_bucket:get_template_modification(Id)),
+  application:stop(speed_trap),
+  application:unset_env(speed_trap, id_patterns),
+  application:unset_env(speed_trap, templates).
+
 unique_id(Name) ->
   {Name, unique_resource()}.
 

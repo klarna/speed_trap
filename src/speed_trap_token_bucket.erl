@@ -33,8 +33,9 @@
 %%%=============================================================================
 -module(speed_trap_token_bucket).
 
--export([start_link/0, bucket/1, new/2, delete/1, modify/2, get_token/1, return_token/1, options/1,
-         active_buckets/0]).
+-export([start_link/0, bucket/1, new/2, delete/1, delete/2, modify/2, get_token/1, return_token/1,
+         options/1, active_buckets/0, get_template_modification/1,
+         delete_template_modifications/0]).
 %% Timer callback
 -export([add_token/4]).
 
@@ -48,6 +49,7 @@
 
 -define(SERVER, ?MODULE).
 -define(ETS_TABLE, speed_trap).
+-define(ETS_TEMPLATE_MODIFICATIONS, speed_trap_template_mods).
 -define(BUCKET_IDX, 1).
 
 -type state() :: #{speed_trap:id() => timer:tref()}.
@@ -69,10 +71,16 @@ start_link() ->
 new(Id, Options) ->
   gen_server:call(?SERVER, {register, Id, Options}).
 
-%% @doc Delete a scheduled function by its id.
+%% @doc Delete a scheduled function and a possibly stored template modification by id.
 -spec delete(speed_trap:id()) -> ok | {error, speed_trap:no_such_speed_trap()}.
 delete(Id) ->
-  gen_server:call(?SERVER, {delete, Id}).
+  delete(Id, true).
+
+%% @doc Delete a scheduled function by its id. The second parameter indicates whether to try
+%% deleting a store template modification by id or not.
+-spec delete(speed_trap:id(), boolean()) -> ok | {error, speed_trap:no_such_speed_trap()}.
+delete(Id, DeleteTemplateModification) ->
+  gen_server:call(?SERVER, {delete, Id, DeleteTemplateModification}).
 
 %% @doc Modify the scheduled function already registered under the
 %% given id.
@@ -130,12 +138,24 @@ active_buckets() ->
   [{Id, Options#{tokens => atomics:get(Bucket, ?BUCKET_IDX)}}
    || {Id, {Options, Bucket}} <- ets:tab2list(?ETS_TABLE)].
 
+%% @doc Get a template modification from the template modifications store.
+-spec get_template_modification(speed_trap:id()) -> {ok, speed_trap:options()} | {error, not_found}.
+get_template_modification(Id) ->
+  gen_server:call(?SERVER, {get_template_modification, Id}).
+
+%% @doc Clean up the template modification store.
+-spec delete_template_modifications() -> ok.
+delete_template_modifications() ->
+  gen_server:call(?SERVER, delete_template_modifications).
+
 %%-----------------------------------------------------------------------------
 %% gen_server callbacks
 %%-----------------------------------------------------------------------------
 -spec init([]) -> {ok, state()}.
 init([]) ->
-  speed_trap = ets:new(?ETS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
+  ?ETS_TABLE = ets:new(?ETS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
+  ?ETS_TEMPLATE_MODIFICATIONS =
+    ets:new(?ETS_TEMPLATE_MODIFICATIONS, [set, protected, named_table, {read_concurrency, true}]),
   {ok, #{}}.
 
 -spec handle_call(term(), {pid(), term()}, state()) -> {reply, ok | {error, term()}, state()}.
@@ -148,7 +168,13 @@ handle_call({register, Id, Options}, _From, Timers) ->
       NewTimers = apply_options(Id, Options, Bucket, Timers),
       {reply, ok, NewTimers}
   end;
-handle_call({delete, Id}, _From, Timers) ->
+handle_call({delete, Id, DeleteTemplateModification}, _From, Timers) ->
+  case DeleteTemplateModification of
+    true ->
+      true = ets:delete(?ETS_TEMPLATE_MODIFICATIONS, Id);
+    _ ->
+      ok
+  end,
   case bucket(Id) of
     {ok, _} ->
       RemainingTimers = cancel_timer_if_exists(Id, Timers),
@@ -160,17 +186,26 @@ handle_call({delete, Id}, _From, Timers) ->
 handle_call({modify, Id, NewOptions}, _From, Timers) ->
   case bucket(Id) of
     {ok, {OldOptions, Bucket}} ->
-      Options = maps:merge(OldOptions, NewOptions),
-      case speed_trap_options:validate(Options, _Required = false) of
-        ok ->
-          NewTimers = apply_options(Id, Options, Bucket, Timers),
-          {reply, ok, NewTimers};
-        {error, _BadOptions} = Error ->
-          {reply, Error, Timers}
-      end;
+      ApplyOptsFn = fun(Opts) -> apply_options(Id, Opts, Bucket, Timers) end,
+      modify_options_and_reply(Id, OldOptions, NewOptions, ApplyOptsFn, Timers);
     {error, _NoSuchSpeedTrap} = Error ->
+      case try_get_options_from_templates(Id) of
+        {ok, OldOptions} ->
+          modify_options_and_reply(Id, OldOptions, NewOptions, undefined, Timers);
+        {error, not_found} ->
+          {reply, Error, Timers}
+      end
+  end;
+handle_call({get_template_modification, Id}, _From, Timers) ->
+  case do_get_template_modification(Id) of
+    {ok, Options} ->
+      {reply, {ok, Options}, Timers};
+    {error, not_found} = Error ->
       {reply, Error, Timers}
   end;
+handle_call(delete_template_modifications, _From, Timers) ->
+  true = ets:delete_all_objects(?ETS_TEMPLATE_MODIFICATIONS),
+  {reply, ok, Timers};
 handle_call(_Request, _From, State) ->
   {reply, {error, no_such_call}, State}.
 
@@ -191,7 +226,8 @@ add_token(Bucket, BucketSize, RefillCount, DeleteWhenFull) ->
   case atomics:get(Bucket, ?BUCKET_IDX) of
     N when N >= BucketSize andalso DeleteWhenFull ->
       Id = bucket_to_id(Bucket),
-      case delete(Id) of
+      %% Do not try to delete a template modification
+      case delete(Id, false) of
         ok ->
           ok;
         {error, no_such_speed_trap} ->
@@ -264,4 +300,62 @@ do_get_token(#{override := Override}, Bucket) ->
       {ok, rate_limit_not_enforced};
     _ ->
       {error, too_many_requests}
+  end.
+
+-spec maybe_store_template_modification(speed_trap:id(), speed_trap:options()) -> boolean().
+maybe_store_template_modification(Id, #{template_id := _TemplateId} = Options) ->
+  true = ets:insert(?ETS_TEMPLATE_MODIFICATIONS, {Id, Options});
+maybe_store_template_modification(_Id, _Options) ->
+  false.
+
+-spec do_get_template_modification(speed_trap:id()) ->
+                                    {ok, speed_trap:options()} | {error, not_found}.
+do_get_template_modification(Id) ->
+  MaybeOptions =
+    ets:select(?ETS_TEMPLATE_MODIFICATIONS,
+               ets:fun2ms(fun({TrapId, Options}) when TrapId =:= Id -> Options end)),
+  case MaybeOptions of
+    [] ->
+      {error, not_found};
+    [Options] ->
+      {ok, Options}
+  end.
+
+-spec try_get_options_from_templates(speed_trap:id()) ->
+                                      {ok, speed_trap:options()} | {error, not_found}.
+try_get_options_from_templates(Id) ->
+  case speed_trap_template:options_from_id(Id, _IgnoreModifications = true) of
+    {ok, TemplateId, TemplateOptions} ->
+      case do_get_template_modification(Id) of
+        {ok, _StoredOptions} = Result ->
+          Result;
+        {error, not_found} ->
+          {ok, TemplateOptions#{template_id => TemplateId}}
+      end;
+    not_found ->
+      {error, not_found}
+  end.
+
+-spec modify_options_and_reply(speed_trap:id(),
+                               speed_trap:options(),
+                               speed_trap:modify_options(),
+                               fun((speed_trap:options()) -> state()) | undefined,
+                               state()) ->
+                                {reply, ok, state()} |
+                                {reply, {error, speed_trap_options:bad_options()}, state()}.
+modify_options_and_reply(Id, OldOptions, NewOptions, ApplyOptsFn, Timers) ->
+  Options = maps:merge(OldOptions, NewOptions),
+  case speed_trap_options:validate(Options, _Required = false) of
+    ok ->
+      NewTimers =
+        case ApplyOptsFn of
+          _ when is_function(ApplyOptsFn) ->
+            ApplyOptsFn(Options);
+          undefined ->
+            Timers
+        end,
+      maybe_store_template_modification(Id, Options),
+      {reply, ok, NewTimers};
+    {error, _BadOptions} = Error ->
+      {reply, Error, Timers}
   end.
