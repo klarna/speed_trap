@@ -1,7 +1,6 @@
 -module(speed_trap_template).
 
--export([init/0, init/2, cleanup/0, options_from_id/1, options_from_id/2, current_id_patterns/0,
-         current_templates/0]).
+-export([init/0, init/2, cleanup/0, options_from_id/1, current_id_patterns/0, current_templates/0]).
 
 -type id_pattern() :: {bucket_id_pattern(), id()}.
 -type id() :: term().
@@ -47,7 +46,7 @@ current_templates() ->
 
 -spec cleanup() -> ok.
 cleanup() ->
-  ok = speed_trap_token_bucket:delete_template_modifications(),
+  ok = speed_trap_token_bucket:delete_overrides(),
   persistent_term:erase(?PTERM_MATCHSPEC),
   persistent_term:erase(?PTERM_TEMPLATES),
   ok.
@@ -55,23 +54,11 @@ cleanup() ->
 -spec options_from_id(speed_trap:id()) ->
                        {ok, speed_trap_template:id(), speed_trap:options()} | not_found.
 options_from_id(Id) ->
-  options_from_id(Id, false).
-
--spec options_from_id(speed_trap:id(), boolean()) ->
-                       {ok, speed_trap_template:id(), speed_trap:options()} | not_found.
-options_from_id(Id, IgnoreModifications) ->
   MatchSpec = persistent_term:get(?PTERM_MATCHSPEC),
   Templates = persistent_term:get(?PTERM_TEMPLATES),
   case template_from_id(Id, MatchSpec) of
-    {ok, TemplateId} when IgnoreModifications ->
+    {ok, TemplateId} ->
       {ok, TemplateId, maps:get(TemplateId, Templates)};
-    {ok, TemplateId} when not IgnoreModifications ->
-      case speed_trap_token_bucket:get_template_modification(Id) of
-        {ok, Options} ->
-          {ok, TemplateId, Options};
-        {error, not_found} ->
-          {ok, TemplateId, maps:get(TemplateId, Templates)}
-      end;
     false ->
       not_found
   end.

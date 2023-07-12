@@ -33,9 +33,8 @@
 %%%=============================================================================
 -module(speed_trap_token_bucket).
 
--export([start_link/0, bucket/1, new/2, delete/1, delete/2, modify/2, get_token/1, return_token/1,
-         options/1, active_buckets/0, get_template_modification/1,
-         delete_template_modifications/0]).
+-export([start_link/0, bucket/1, new/2, delete/2, modify/2, get_token/1, return_token/1, options/1,
+         active_buckets/0, get_override/1, delete_override/1, delete_overrides/0]).
 %% Timer callback
 -export([add_token/4]).
 
@@ -48,9 +47,10 @@
 -export_type([token_bucket/0]).
 
 -define(SERVER, ?MODULE).
--define(ETS_TABLE, speed_trap).
--define(ETS_TEMPLATE_MODIFICATIONS, speed_trap_template_mods).
+-define(ETS_SPEED_TRAPS, speed_traps).
+-define(ETS_TEMPLATE_BASED_TRAP_OVERRIDES, speed_trap_template_based_overrides).
 -define(BUCKET_IDX, 1).
+-define(not_found, not_found).
 
 -type state() :: #{speed_trap:id() => timer:tref()}.
 
@@ -71,18 +71,13 @@ start_link() ->
 new(Id, Options) ->
   gen_server:call(?SERVER, {register, Id, Options}).
 
-%% @doc Delete a scheduled function and a possibly stored template modification by id.
--spec delete(speed_trap:id()) -> ok | {error, speed_trap:no_such_speed_trap()}.
-delete(Id) ->
-  delete(Id, true).
-
-%% @doc Delete a scheduled function by its id. The second parameter indicates whether to try
-%% deleting a store template modification by id or not.
+%% @doc Deletes a scheduled function by its id. The second parameter indicates whether to try
+%% deleting a store template based token bucket override by id or not.
 -spec delete(speed_trap:id(), boolean()) -> ok | {error, speed_trap:no_such_speed_trap()}.
-delete(Id, DeleteTemplateModification) ->
-  gen_server:call(?SERVER, {delete, Id, DeleteTemplateModification}).
+delete(Id, DeleteOverride) ->
+  gen_server:call(?SERVER, {delete, Id, DeleteOverride}).
 
-%% @doc Modify the scheduled function already registered under the
+%% @doc Modifies the scheduled function already registered under the
 %% given id.
 -spec modify(speed_trap:id(), speed_trap:modify_options()) ->
               ok | {error, speed_trap_options:bad_options() | speed_trap:no_such_speed_trap()}.
@@ -126,7 +121,7 @@ options(Id) ->
               {ok, {speed_trap:stored_options(), token_bucket()}} |
               {error, speed_trap:no_such_speed_trap()}.
 bucket(Id) ->
-  case ets:lookup(?ETS_TABLE, Id) of
+  case ets:lookup(?ETS_SPEED_TRAPS, Id) of
     [] ->
       {error, no_such_speed_trap};
     [{_Id, {Options, Bucket}}] ->
@@ -136,26 +131,33 @@ bucket(Id) ->
 -spec active_buckets() -> [{speed_trap:id(), speed_trap:stored_options()}].
 active_buckets() ->
   [{Id, Options#{tokens => atomics:get(Bucket, ?BUCKET_IDX)}}
-   || {Id, {Options, Bucket}} <- ets:tab2list(?ETS_TABLE)].
+   || {Id, {Options, Bucket}} <- ets:tab2list(?ETS_SPEED_TRAPS)].
 
-%% @doc Get a template modification from the template modifications store.
--spec get_template_modification(speed_trap:id()) -> {ok, speed_trap:options()} | {error, not_found}.
-get_template_modification(Id) ->
-  gen_server:call(?SERVER, {get_template_modification, Id}).
+%% @doc Gets an override from the overrides store.
+-spec get_override(speed_trap:id()) -> {ok, speed_trap:modify_options()} | {error, ?not_found}.
+get_override(Id) ->
+  gen_server:call(?SERVER, {get_override, Id}).
 
-%% @doc Clean up the template modification store.
--spec delete_template_modifications() -> ok.
-delete_template_modifications() ->
-  gen_server:call(?SERVER, delete_template_modifications).
+%% @doc Deletes a possibly stored token bucket override from the store.
+-spec delete_override(speed_trap:id()) -> ok.
+delete_override(Id) ->
+  gen_server:call(?SERVER, {delete_override, Id}).
+
+%% @doc Cleans up the overrides store.
+-spec delete_overrides() -> ok.
+delete_overrides() ->
+  gen_server:call(?SERVER, delete_overrides).
 
 %%-----------------------------------------------------------------------------
 %% gen_server callbacks
 %%-----------------------------------------------------------------------------
 -spec init([]) -> {ok, state()}.
 init([]) ->
-  ?ETS_TABLE = ets:new(?ETS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
-  ?ETS_TEMPLATE_MODIFICATIONS =
-    ets:new(?ETS_TEMPLATE_MODIFICATIONS, [set, protected, named_table, {read_concurrency, true}]),
+  ?ETS_SPEED_TRAPS =
+    ets:new(?ETS_SPEED_TRAPS, [set, protected, named_table, {read_concurrency, true}]),
+  ?ETS_TEMPLATE_BASED_TRAP_OVERRIDES =
+    ets:new(?ETS_TEMPLATE_BASED_TRAP_OVERRIDES,
+            [set, protected, named_table, {read_concurrency, true}]),
   {ok, #{}}.
 
 -spec handle_call(term(), {pid(), term()}, state()) -> {reply, ok | {error, term()}, state()}.
@@ -171,14 +173,14 @@ handle_call({register, Id, Options}, _From, Timers) ->
 handle_call({delete, Id, DeleteTemplateModification}, _From, Timers) ->
   case DeleteTemplateModification of
     true ->
-      true = ets:delete(?ETS_TEMPLATE_MODIFICATIONS, Id);
+      true = ets:delete(?ETS_TEMPLATE_BASED_TRAP_OVERRIDES, Id);
     _ ->
       ok
   end,
   case bucket(Id) of
     {ok, _} ->
       RemainingTimers = cancel_timer_if_exists(Id, Timers),
-      true = ets:delete(?ETS_TABLE, Id),
+      true = ets:delete(?ETS_SPEED_TRAPS, Id),
       {reply, ok, RemainingTimers};
     {error, _NoSuchSpeedTrap} = Error ->
       {reply, Error, Timers}
@@ -192,19 +194,22 @@ handle_call({modify, Id, NewOptions}, _From, Timers) ->
       case try_get_options_from_templates(Id) of
         {ok, OldOptions} ->
           modify_options_and_reply(Id, OldOptions, NewOptions, undefined, Timers);
-        {error, not_found} ->
+        {error, ?not_found} ->
           {reply, Error, Timers}
       end
   end;
-handle_call({get_template_modification, Id}, _From, Timers) ->
-  case do_get_template_modification(Id) of
+handle_call({get_override, Id}, _From, Timers) ->
+  case do_get_override(Id) of
     {ok, Options} ->
       {reply, {ok, Options}, Timers};
-    {error, not_found} = Error ->
+    {error, ?not_found} = Error ->
       {reply, Error, Timers}
   end;
-handle_call(delete_template_modifications, _From, Timers) ->
-  true = ets:delete_all_objects(?ETS_TEMPLATE_MODIFICATIONS),
+handle_call({delete_override, Id}, _From, Timers) ->
+  true = ets:delete(?ETS_TEMPLATE_BASED_TRAP_OVERRIDES, Id),
+  {reply, ok, Timers};
+handle_call(delete_overrides, _From, Timers) ->
+  true = ets:delete_all_objects(?ETS_TEMPLATE_BASED_TRAP_OVERRIDES),
   {reply, ok, Timers};
 handle_call(_Request, _From, State) ->
   {reply, {error, no_such_call}, State}.
@@ -258,7 +263,7 @@ add_token(Bucket, BucketSize, RefillCount, DeleteWhenFull) ->
 -spec apply_options(speed_trap:id(), speed_trap:options(), token_bucket(), state()) -> state().
 apply_options(Id, Options, Bucket, State) ->
   NewState = cancel_timer_if_exists(Id, State),
-  ets:insert(?ETS_TABLE, {Id, {Options, Bucket}}),
+  ets:insert(?ETS_SPEED_TRAPS, {Id, {Options, Bucket}}),
   case Options of
     #{override := blocked} ->
       atomics:put(Bucket, ?BUCKET_IDX, 0),
@@ -287,7 +292,8 @@ cancel_timer_if_exists(Id, State) ->
   end.
 
 bucket_to_id(Bucket) ->
-  [Id] = ets:select(?ETS_TABLE, ets:fun2ms(fun({Id, {_Options, B}}) when B =:= Bucket -> Id end)),
+  [Id] =
+    ets:select(?ETS_SPEED_TRAPS, ets:fun2ms(fun({Id, {_Options, B}}) when B =:= Bucket -> Id end)),
   Id.
 
 do_get_token(#{override := blocked}, _Bucket) ->
@@ -302,38 +308,44 @@ do_get_token(#{override := Override}, Bucket) ->
       {error, too_many_requests}
   end.
 
--spec maybe_store_template_modification(speed_trap:id(), speed_trap:options()) -> boolean().
-maybe_store_template_modification(Id, #{template_id := _TemplateId} = Options) ->
-  true = ets:insert(?ETS_TEMPLATE_MODIFICATIONS, {Id, Options});
-maybe_store_template_modification(_Id, _Options) ->
-  false.
-
--spec do_get_template_modification(speed_trap:id()) ->
-                                    {ok, speed_trap:options()} | {error, not_found}.
-do_get_template_modification(Id) ->
+-spec do_get_override(speed_trap:id()) -> {ok, speed_trap:modify_options()} | {error, ?not_found}.
+do_get_override(Id) ->
   MaybeOptions =
-    ets:select(?ETS_TEMPLATE_MODIFICATIONS,
+    ets:select(?ETS_TEMPLATE_BASED_TRAP_OVERRIDES,
                ets:fun2ms(fun({TrapId, Options}) when TrapId =:= Id -> Options end)),
   case MaybeOptions of
     [] ->
-      {error, not_found};
+      {error, ?not_found};
     [Options] ->
       {ok, Options}
   end.
 
+-spec update_override(speed_trap:id(), speed_trap:modify_options()) -> true.
+update_override(Id, Override) ->
+  NewOverride =
+    case do_get_override(Id) of
+      {ok, StoredOverride} ->
+        maps:merge(StoredOverride, Override);
+      {error, ?not_found} ->
+        Override
+    end,
+  true = ets:insert(?ETS_TEMPLATE_BASED_TRAP_OVERRIDES, {Id, NewOverride}).
+
 -spec try_get_options_from_templates(speed_trap:id()) ->
-                                      {ok, speed_trap:options()} | {error, not_found}.
+                                      {ok, speed_trap:options()} | {error, ?not_found}.
 try_get_options_from_templates(Id) ->
-  case speed_trap_template:options_from_id(Id, _IgnoreModifications = true) of
+  case speed_trap_template:options_from_id(Id) of
     {ok, TemplateId, TemplateOptions} ->
-      case do_get_template_modification(Id) of
-        {ok, _StoredOptions} = Result ->
-          Result;
-        {error, not_found} ->
-          {ok, TemplateOptions#{template_id => TemplateId}}
-      end;
-    not_found ->
-      {error, not_found}
+      Options =
+        case do_get_override(Id) of
+          {ok, Override} ->
+            maps:merge(TemplateOptions, Override);
+          {error, ?not_found} ->
+            TemplateOptions
+        end,
+      {ok, Options#{template_id => TemplateId}};
+    ?not_found ->
+      {error, ?not_found}
   end.
 
 -spec modify_options_and_reply(speed_trap:id(),
@@ -354,7 +366,12 @@ modify_options_and_reply(Id, OldOptions, NewOptions, ApplyOptsFn, Timers) ->
           undefined ->
             Timers
         end,
-      maybe_store_template_modification(Id, Options),
+      case maps:is_key(template_id, OldOptions) of
+        true ->
+          update_override(Id, NewOptions);
+        false ->
+          ok
+      end,
       {reply, ok, NewTimers};
     {error, _BadOptions} = Error ->
       {reply, Error, Timers}
