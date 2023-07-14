@@ -136,7 +136,12 @@ active_buckets() ->
 %% @doc Gets an override from the overrides store.
 -spec get_override(speed_trap:id()) -> {ok, speed_trap:modify_options()} | {error, ?not_found}.
 get_override(Id) ->
-  gen_server:call(?SERVER, {get_override, Id}).
+  case ets:lookup(?ETS_TEMPLATE_BASED_TRAP_OVERRIDES, Id) of
+    [] ->
+      {error, ?not_found};
+    [{_, Options}] ->
+      {ok, Options}
+  end.
 
 %% @doc Deletes a possibly stored token bucket override from the store.
 -spec delete_override(speed_trap:id()) -> ok.
@@ -197,13 +202,6 @@ handle_call({modify, Id, NewOptions}, _From, Timers) ->
         {error, ?not_found} ->
           {reply, Error, Timers}
       end
-  end;
-handle_call({get_override, Id}, _From, Timers) ->
-  case do_get_override(Id) of
-    {ok, Options} ->
-      {reply, {ok, Options}, Timers};
-    {error, ?not_found} = Error ->
-      {reply, Error, Timers}
   end;
 handle_call({delete_override, Id}, _From, Timers) ->
   true = ets:delete(?ETS_TEMPLATE_BASED_TRAP_OVERRIDES, Id),
@@ -308,22 +306,10 @@ do_get_token(#{override := Override}, Bucket) ->
       {error, too_many_requests}
   end.
 
--spec do_get_override(speed_trap:id()) -> {ok, speed_trap:modify_options()} | {error, ?not_found}.
-do_get_override(Id) ->
-  MaybeOptions =
-    ets:select(?ETS_TEMPLATE_BASED_TRAP_OVERRIDES,
-               ets:fun2ms(fun({TrapId, Options}) when TrapId =:= Id -> Options end)),
-  case MaybeOptions of
-    [] ->
-      {error, ?not_found};
-    [Options] ->
-      {ok, Options}
-  end.
-
 -spec update_override(speed_trap:id(), speed_trap:modify_options()) -> true.
 update_override(Id, Override) ->
   NewOverride =
-    case do_get_override(Id) of
+    case get_override(Id) of
       {ok, StoredOverride} ->
         maps:merge(StoredOverride, Override);
       {error, ?not_found} ->
@@ -337,7 +323,7 @@ try_get_options_from_templates(Id) ->
   case speed_trap_template:options_from_id(Id) of
     {ok, TemplateId, TemplateOptions} ->
       Options =
-        case do_get_override(Id) of
+        case get_override(Id) of
           {ok, Override} ->
             maps:merge(TemplateOptions, Override);
           {error, ?not_found} ->
