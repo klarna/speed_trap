@@ -46,6 +46,7 @@ current_templates() ->
 
 -spec cleanup() -> ok.
 cleanup() ->
+  ok = speed_trap_token_bucket:delete_overrides(),
   persistent_term:erase(?PTERM_MATCHSPEC),
   persistent_term:erase(?PTERM_TEMPLATES),
   ok.

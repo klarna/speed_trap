@@ -25,8 +25,8 @@
 %%%=============================================================================
 -module(speed_trap).
 
--export([new/2, delete/1, try_pass/1, try_pass_all/1, modify/2, options/1, all/0, block/1,
-         unblock/1]).
+-export([new/2, delete/1, delete/2, try_pass/1, try_pass_all/1, modify/2, options/1, all/0, block/1,
+         unblock/1, delete_override/1]).
 
 -type id() :: term().
 -type bucket_size() :: non_neg_integer().
@@ -87,10 +87,17 @@ new(Id, Options) ->
       Errors
   end.
 
-%% @doc Removes a TokenBucket and hence removes a rate limiter.
+%% @doc Deletes a token bucket as well as a possibly stored template based token bucket override
+%% and hence removes a rate limiter.
 -spec delete(id()) -> ok | {error, no_such_speed_trap()}.
 delete(Id) ->
-  speed_trap_token_bucket:delete(Id).
+  delete(Id, true).
+
+%% @doc Deletes a token bucket by id. If the second argument is `true' also deletes a
+%% possibly stored template based token bucket override.
+-spec delete(id(), boolean()) -> ok | {error, no_such_speed_trap()}.
+delete(Id, DeleteOverride) ->
+  speed_trap_token_bucket:delete(Id, DeleteOverride).
 
 -spec all() -> [{id(), stored_options()}].
 all() ->
@@ -137,6 +144,11 @@ block(Id) ->
 unblock(Id) ->
   modify(Id, #{override => none}).
 
+%% @doc Deletes a template based token bucket override by id.
+-spec delete_override(id()) -> ok.
+delete_override(Id) ->
+  speed_trap_token_bucket:delete_override(Id).
+
 %%-----------------------------------------------------------------------------
 %% Internal functions
 %%-----------------------------------------------------------------------------
@@ -152,7 +164,14 @@ do_try_pass(Id, AllowCreationFromTemplate) ->
 -spec try_pass_from_template(id()) -> try_pass_result().
 try_pass_from_template(Id) ->
   case speed_trap_template:options_from_id(Id) of
-    {ok, TemplateId, Options} ->
+    {ok, TemplateId, Options0} ->
+      Options =
+        case speed_trap_token_bucket:get_override(Id) of
+          {ok, Override} ->
+            maps:merge(Options0, Override);
+          {error, not_found} ->
+            Options0
+        end,
       case new(Id, Options#{template_id => TemplateId}) of
         ok ->
           do_try_pass(Id, false);
