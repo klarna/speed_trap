@@ -342,23 +342,31 @@ try_get_options_from_templates(Id) ->
                                 {reply, ok, state()} |
                                 {reply, {error, speed_trap_options:bad_options()}, state()}.
 modify_options_and_reply(Id, OldOptions, NewOptions, ApplyOptsFn, Timers) ->
-  Options = maps:merge(OldOptions, NewOptions),
-  case speed_trap_options:validate(Options, _Required = false) of
-    ok ->
-      NewTimers =
-        case ApplyOptsFn of
-          _ when is_function(ApplyOptsFn) ->
-            ApplyOptsFn(Options);
-          undefined ->
-            Timers
-        end,
-      case maps:is_key(template_id, OldOptions) of
-        true ->
-          update_override(Id, NewOptions);
-        false ->
-          ok
-      end,
-      {reply, ok, NewTimers};
-    {error, _BadOptions} = Error ->
-      {reply, Error, Timers}
+  case maps:merge(OldOptions, NewOptions) of
+    OldOptions ->
+      {reply, ok, Timers};
+    Options ->
+      case speed_trap_options:validate(Options, _Required = false) of
+        ok ->
+          NewTimers = do_modify_options(Id, OldOptions, NewOptions, ApplyOptsFn, Timers, Options),
+          {reply, ok, NewTimers};
+        {error, _BadOptions} = Error ->
+          {reply, Error, Timers}
+      end
   end.
+
+do_modify_options(Id, OldOptions, NewOptions, ApplyOptsFn, Timers, Options) ->
+  NewTimers =
+    case ApplyOptsFn of
+      _ when is_function(ApplyOptsFn) ->
+        ApplyOptsFn(Options);
+      undefined ->
+        Timers
+    end,
+  case maps:is_key(template_id, OldOptions) of
+    true ->
+      update_override(Id, NewOptions);
+    false ->
+      ok
+  end,
+  NewTimers.

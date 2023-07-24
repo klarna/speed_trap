@@ -160,6 +160,22 @@ modify_bucket_test() ->
                [speed_trap:try_pass(Id) || _ <- lists:seq(1, 4)]),
   application:stop(speed_trap).
 
+modify_bucket_no_change_test() ->
+  application:ensure_all_started(speed_trap),
+  Id = unique_id(?FUNCTION_NAME),
+  Opts =
+    #{bucket_size => 2,
+      refill_interval => 100,
+      refill_count => 1,
+      delete_when_full => false,
+      override => none},
+  ok = speed_trap:new(Id, Opts),
+  Timers = sys:get_state(speed_trap_token_bucket),
+  ok = speed_trap:modify(Id, #{bucket_size => 2, refill_interval => 100}),
+  ?assertEqual({ok, Opts}, speed_trap:options(Id)),
+  ?assertEqual(Timers, sys:get_state(speed_trap_token_bucket)),
+  application:stop(speed_trap).
+
 modify_block_test() ->
   application:ensure_all_started(speed_trap),
   Id = unique_id(?FUNCTION_NAME),
