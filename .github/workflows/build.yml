@@ -50,7 +50,7 @@ jobs:
     - name: Check app calls
       run: make app_calls
     - name: Docs
-      run: make doc || true # older versions of Erlang don't allow ex_doc
+      run: make doc
     - name: Formatter
       run: make format-verify
     - name: Publish Documentation
