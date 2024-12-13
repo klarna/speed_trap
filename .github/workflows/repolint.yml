@@ -8,4 +8,4 @@ on:
 
 jobs:
   lint:
-    uses: klarna-incubator/meta/.github/workflows/repolint.yml@master
+    uses: klarna/meta/.github/workflows/repolint.yml@master
