@@ -11,4 +11,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial open sourced version
 
-[1.0.0]: https://github.com/klarna-incubator/TODO/releases/tag/v1.0.0
+[1.0.0]: https://github.com/klarna/TODO/releases/tag/v1.0.0
