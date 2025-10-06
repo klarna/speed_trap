@@ -8,6 +8,17 @@
 
 -spec validate(term(), boolean()) -> ok | {error, bad_options()}.
 validate(Options, AllRequired) when is_map(Options) ->
+  DynamicOptions =
+    case maps:get(dynamic_rate_limiter, Options, false) of
+      false ->
+        [];
+      true ->
+        [{max_bucket_size, true, fun validate_bucket_size/1},
+         {min_bucket_size, true, fun validate_bucket_size/1},
+         {scaling_time_interval, true, fun validate_scaling_time_interval/1},
+         {rejection_rate_threshold, true, fun validate_rejection_rate_threshold/1},
+         {scaling_bucket_size_adjust_count, true, fun validate_scaling_bucket_size_adjust_count/1}]
+    end,
   Errors =
     lists:foldl(fun({Key, Mandatory, ValidationFn}, Errs) ->
                    case validate_key(Key, Options, ValidationFn, Mandatory, AllRequired) of
@@ -22,7 +33,8 @@ validate(Options, AllRequired) when is_map(Options) ->
                  {refill_interval, true, fun validate_refill_interval/1},
                  {refill_count, true, fun validate_refill_count/1},
                  {delete_when_full, true, fun validate_delete_when_full/1},
-                 {override, false, fun validate_override/1}]),
+                 {override, false, fun validate_override/1}]
+                ++ DynamicOptions),
   case Errors of
     [] ->
       ok;
@@ -80,3 +92,20 @@ validate_override(blocked) ->
   ok;
 validate_override(Override) ->
   {error, {override, Override}}.
+
+validate_scaling_time_interval(TimeInterval) when is_integer(TimeInterval), TimeInterval > 0 ->
+  ok;
+validate_scaling_time_interval(TimeInterval) ->
+  {error, {invalid_time_interval, TimeInterval}}.
+
+validate_rejection_rate_threshold(Threshold)
+  when is_number(Threshold), Threshold >= 0, Threshold =< 100 ->
+  ok;
+validate_rejection_rate_threshold(Threshold) ->
+  {error, {invalid_threshold, Threshold}}.
+
+validate_scaling_bucket_size_adjust_count(AdjustCount)
+  when is_integer(AdjustCount), AdjustCount > 0 ->
+  ok;
+validate_scaling_bucket_size_adjust_count(AdjustCount) ->
+  {error, {invalid_scaling_bucket_size_adjust_count, AdjustCount}}.
