@@ -187,9 +187,4 @@ adjust_bucket_size(Id, CurrentBucketSize, NewBucketSize, RefillCount) ->
   %% Ensure minimum refill count
   AdjustedRefillCount = max(1, NewRefillCount),
   ModifyOpts = #{bucket_size => NewBucketSize, refill_count => AdjustedRefillCount},
-  case speed_trap:modify(Id, ModifyOpts) of
-    ok ->
-      ok;
-    {error, _Reason} ->
-      ok % Ignore errors, maybe the bucket doesn't exist yet
-  end.
+  ok = speed_trap:modify(Id, ModifyOpts).

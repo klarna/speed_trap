@@ -128,7 +128,8 @@ speed_trap:delete(Id).
 ```
 
 ## Dynamic rate limiter
-Speed trap includes a dynamic rate limiter that automatically adjusts bucket_size based on rejection rates. This is particularly useful when you need to gradually scale quotas to allow downstream systems time to scale.
+Speed trap includes a dynamic rate limiter that automatically adjusts bucket_size based on rejection rates. 
+This is particularly useful when you need to gradually scale quotas to allow downstream systems time to scale.
 
 ### Features
 - **Automatic upscaling**: When rejection rate exceeds a threshold, bucket_size gradually increases
@@ -143,7 +144,7 @@ A dynamic rate limiter requires the same parameters as a usual one plus the foll
 * `min_bucket_size` - maximum bucket_size (lower limit)
 * `scaling_time_interval` - time window in milliseconds to check for rejections
 * `rejection_rate_threshold` - percentage threshold (0-100) that triggers up/down scaling
-* `bucket_size_adjust_count` - the count to adjust the bucket_size by on each scaling_time_interval
+* `scaling_bucket_size_adjust_count` - the count to adjust the bucket_size by on each scaling_time_interval
 
 ### Example usage
 

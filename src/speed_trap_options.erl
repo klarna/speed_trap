@@ -13,8 +13,7 @@ validate(Options, AllRequired) when is_map(Options) ->
       false ->
         [];
       true ->
-        [{max_bucket_size, true, fun validate_bucket_size/1},
-         {min_bucket_size, true, fun validate_bucket_size/1},
+        [{max_bucket_size, true, fun validate_limit_bucket_size/2},
          {scaling_time_interval, true, fun validate_scaling_time_interval/1},
          {rejection_rate_threshold, true, fun validate_rejection_rate_threshold/1},
          {scaling_bucket_size_adjust_count, true, fun validate_scaling_bucket_size_adjust_count/1}]
@@ -56,7 +55,12 @@ validate_key(Key, Options, ValidationFn, Mandatory, Required) ->
     false when not Mandatory orelse not Required ->
       ok;
     true ->
-      ValidationFn(maps:get(Key, Options))
+      case erlang:fun_info(ValidationFn, arity) of
+        {arity, 1} ->
+          ValidationFn(maps:get(Key, Options));
+        {arity, 2} ->
+          ValidationFn(maps:get(Key, Options), Options)
+      end
   end.
 
 -spec validate_bucket_size(term()) -> ok | {error, {bucket_size, term()}}.
@@ -64,6 +68,18 @@ validate_bucket_size(BucketSize) when is_integer(BucketSize), BucketSize >= 0 ->
   ok;
 validate_bucket_size(BucketSize) ->
   {error, {bucket_size, BucketSize}}.
+
+validate_limit_bucket_size(MaxBucketSize, Options) ->
+  MinBucketSize = maps:get(min_bucket_size, Options),
+  AreNumbers = is_integer(MinBucketSize) andalso is_integer(MaxBucketSize),
+  WithinBoundaries =
+    MinBucketSize < MaxBucketSize andalso MinBucketSize >= 0 andalso MaxBucketSize >= 0,
+  case AreNumbers andalso WithinBoundaries of
+    true ->
+      ok;
+    false ->
+      {error, {limit_bucket_size, {MinBucketSize, MaxBucketSize}}}
+  end.
 
 -spec validate_refill_interval(term()) -> ok | {error, {refill_interval, term()}}.
 validate_refill_interval(RefillInterval) when is_integer(RefillInterval), RefillInterval > 0 ->
@@ -99,7 +115,7 @@ validate_scaling_time_interval(TimeInterval) ->
   {error, {invalid_time_interval, TimeInterval}}.
 
 validate_rejection_rate_threshold(Threshold)
-  when is_number(Threshold), Threshold >= 0, Threshold =< 100 ->
+  when is_number(Threshold), Threshold > 0, Threshold =< 100 ->
   ok;
 validate_rejection_rate_threshold(Threshold) ->
   {error, {invalid_threshold, Threshold}}.

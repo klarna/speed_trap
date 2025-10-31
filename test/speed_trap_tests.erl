@@ -647,6 +647,18 @@ dynamic_rate_limiter_bad_options_test() ->
       refill_count => 1,
       delete_when_full => false},
   ?assertMatch({error, {bad_options, _}}, speed_trap:new_dynamic(Id, BadOpts2)),
+  %% Invalid: min_bucket_size > max_bucket_size
+  BadOpts3 =
+    #{min_bucket_size => 120,
+      max_bucket_size => 50,
+      scaling_time_interval => timer:seconds(1),
+      rejection_rate_threshold => 50,
+      scaling_bucket_size_adjust_count => 5,
+      refill_interval => 1000,
+      refill_count => 1,
+      delete_when_full => false},
+  ?assertMatch({error, {bad_options, [{limit_bucket_size, {_, _}}]}},
+               speed_trap:new_dynamic(Id, BadOpts3)),
   application:stop(speed_trap).
 
 dynamic_rate_limiter_delete_test() ->
