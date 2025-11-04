@@ -95,7 +95,7 @@ get_token(Id) ->
     {error, no_such_speed_trap} = E ->
       E;
     {ok, {Options, Bucket}} ->
-      do_get_token(Options, Bucket)
+      do_get_token(Id, Options, Bucket)
   end.
 
 -spec return_token(speed_trap:id()) -> ok | {error, speed_trap:no_such_speed_trap()}.
@@ -294,15 +294,19 @@ bucket_to_id(Bucket) ->
     ets:select(?ETS_SPEED_TRAPS, ets:fun2ms(fun({Id, {_Options, B}}) when B =:= Bucket -> Id end)),
   Id.
 
-do_get_token(#{override := blocked}, _Bucket) ->
+do_get_token(_Id, #{override := blocked}, _Bucket) ->
   {error, blocked};
-do_get_token(#{override := Override}, Bucket) ->
+do_get_token(Id, #{override := Override} = Options, Bucket) ->
+  IsDynamic = maps:get(dynamic_rate_limiter, Options, false),
   case atomics:sub_get(Bucket, ?BUCKET_IDX, 1) of
     N when N >= 0 ->
+      maybe_record_dynamic_acceptance(Id, IsDynamic),
       {ok, N};
     _ when Override =:= not_enforced ->
+      maybe_record_dynamic_acceptance(Id, IsDynamic),
       {ok, rate_limit_not_enforced};
     _ ->
+      maybe_record_dynamic_rejection(Id, IsDynamic),
       {error, too_many_requests}
   end.
 
@@ -370,3 +374,15 @@ do_modify_options(Id, OldOptions, NewOptions, ApplyOptsFn, Timers, Options) ->
       ok
   end,
   NewTimers.
+
+-spec maybe_record_dynamic_rejection(speed_trap:id(), boolean()) -> ok.
+maybe_record_dynamic_rejection(Id, true) ->
+  speed_trap_dynamic:record_rejection(Id);
+maybe_record_dynamic_rejection(_Id, false) ->
+  ok.
+
+-spec maybe_record_dynamic_acceptance(speed_trap:id(), boolean()) -> ok.
+maybe_record_dynamic_acceptance(Id, true) ->
+  speed_trap_dynamic:record_acceptance(Id);
+maybe_record_dynamic_acceptance(_Id, false) ->
+  ok.

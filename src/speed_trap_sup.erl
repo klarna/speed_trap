@@ -34,7 +34,7 @@ init([]) ->
     #{strategy => one_for_all,
       intensity => 0,
       period => 1},
-  ChildSpecs = [child(speed_trap_token_bucket)],
+  ChildSpecs = [child(speed_trap_token_bucket), child(speed_trap_dynamic)],
   {ok, {SupFlags, ChildSpecs}}.
 
 %%-----------------------------------------------------------------------------

@@ -127,6 +127,63 @@ In order to delete a rate limiter:
 speed_trap:delete(Id).
 ```
 
+## Dynamic rate limiter
+Speed trap includes a dynamic rate limiter that automatically adjusts bucket_size based on rejection rates. 
+This is particularly useful when you need to gradually scale quotas to allow downstream systems time to scale.
+
+### Features
+- **Automatic upscaling**: When rejection rate exceeds a threshold, bucket_size gradually increases
+- **Automatic downscaling**: When rejection rate is below threshold, bucket_size gradually decreases
+- **Configurable bounds**: Set minimum and maximum bucket_size limits
+- **Gradual adjustments**: Prevents sudden spikes by incrementing bucket_size slowly over time
+
+### Configuration
+A dynamic rate limiter requires the same parameters as a usual one plus the following ones:
+
+* `max_bucket_size` - maximum bucket_size (upper limit)
+* `min_bucket_size` - maximum bucket_size (lower limit)
+* `scaling_time_interval` - time window in milliseconds to check for rejections
+* `rejection_rate_threshold` - percentage threshold (0-100) that triggers up/down scaling
+* `scaling_bucket_size_adjust_count` - the count to adjust the bucket_size by on each scaling_time_interval
+
+### Example usage
+
+#### Simple approach - let speed_trap calculate defaults:
+```erlang
+application:ensure_all_started(speed_trap).
+Id = {<<"my_dynamodb_table">>, <<"write">>}.
+
+%% Create a dynamic rate limiter with calculated defaults
+DynamicOpts = #{
+  min_bucket_size => 20,                     % Start at 20 units
+  max_bucket_size => 50,                     % Cap at 50 units
+  scaling_time_interval => timer:minutes(5), % Check every 5 minutes
+  scaling_bucket_size_adjust_count => 5      % Adjust by 5 units after each scaling_time_interval
+  rejection_rate_threshold => 30,            % Upscale if >30% rejected
+  refill_interval => timer:seconds(1),       % how often the bucket is refilled
+  refill_count => 20,                        % number of tokens to refill
+  delete_when_full => false                  % Do not delete bucket when full
+  override => none                           % No overrides
+},
+
+speed_trap:new_dynamic(Id, DynamicOpts).        % Create dynamic limiter
+
+%% Use it like a regular speed trap
+speed_trap:try_pass(Id).                        % {ok, RemainingTokens} | {error, too_many_requests}
+
+%% Delete when done
+speed_trap:delete_dynamic(Id).
+```
+
+### How it works
+1. The limiter starts at `min_bucket_size` (e.g., 20 RPS)
+2. Every `scaling_time_interval`, it calculates the rejection rate over that period
+3. If rejection rate > `rejection_rate_threshold`, bucket_size increases by `scaling_bucket_size_adjust_count` (up to `max_bucket_size`)
+4. If rejection rate < `rejection_rate_threshold`, bucket_size decreases by `scaling_bucket_size_adjust_count` (down to `min_bucket_size`)
+5. The underlying token bucket is automatically reconfigured with each adjustment
+
+This gradual scaling gives downstream systems time to scale accordingly.
+
 ## Template rate limiters
 When you do not know upfront all the rate limiters that you need you can add templates for rate limiters and connect them to rate limiter id patterns.
 When a speed trap is not present when calling speed_trap:try_pass/1, speed_trap looks for a pattern

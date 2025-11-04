@@ -26,12 +26,15 @@
 -module(speed_trap).
 
 -export([new/2, delete/1, delete/2, try_pass/1, try_pass_all/1, modify/2, options/1, all/0, block/1,
-         unblock/1, delete_override/1]).
+         unblock/1, delete_override/1, new_dynamic/2, delete_dynamic/1]).
 
 -type id() :: term().
 -type bucket_size() :: non_neg_integer().
 -type refill_interval() :: pos_integer().
+-type scaling_interval() :: pos_integer().
 -type refill_count() :: pos_integer().
+-type scaling_bucket_size_adjust_count() :: pos_integer().
+-type rejection_rate_threshold() :: pos_integer().
 -type override() :: none | not_enforced | blocked.
 -type already_exists() :: already_exists.
 -type blocked() :: blocked.
@@ -50,6 +53,12 @@
     delete_when_full := boolean(),
     override := override(),
     template_id => speed_trap_template:id(),
+    dynamic_rate_limiter => boolean(),
+    max_bucket_size => bucket_size(),
+    min_bucket_size => bucket_size(),
+    scaling_time_interval => scaling_interval(),
+    scaling_bucket_size_adjust_count => scaling_bucket_size_adjust_count(),
+    rejection_rate_threshold => rejection_rate_threshold(),
     any() => any()}.
 -type stored_options() ::
   #{bucket_size := bucket_size(),
@@ -58,6 +67,12 @@
     delete_when_full := boolean(),
     override := override(),
     template_id => speed_trap_template:id(),
+    dynamic_rate_limiter => boolean(),
+    max_bucket_size => bucket_size(),
+    min_bucket_size => bucket_size(),
+    scaling_time_interval => scaling_interval(),
+    scaling_bucket_size_adjust_count => scaling_bucket_size_adjust_count(),
+    rejection_rate_threshold => rejection_rate_threshold(),
     any() => any()}.
 -type modify_options() ::
   #{bucket_size => bucket_size(),
@@ -65,6 +80,12 @@
     refill_count => refill_count(),
     delete_when_full => boolean(),
     override => override(),
+    dynamic_rate_limiter => boolean(),
+    max_bucket_size => bucket_size(),
+    min_bucket_size => bucket_size(),
+    scaling_time_interval => scaling_interval(),
+    scaling_bucket_size_adjust_count => scaling_bucket_size_adjust_count(),
+    rejection_rate_threshold => rejection_rate_threshold(),
     any() => any()}.
 
 -export_type([id/0, bucket_size/0, refill_interval/0, refill_count/0, options/0, stored_options/0,
@@ -85,6 +106,29 @@ new(Id, Options) ->
       end;
     Errors ->
       Errors
+  end.
+
+%% @doc Creates a new dynamic rate limiter that automatically adjusts bucket_size
+%% based on rejection rates. The bucket starts at min_bucket_size and adjusts up to
+%% max_bucket_size based on the rejection_rate_threshold.
+-spec new_dynamic(id(), options()) ->
+                   ok | {error, already_exists() | speed_trap_options:bad_options()}.
+new_dynamic(Id, DynamicOpts0) ->
+  DynamicOpts =
+    DynamicOpts0#{dynamic_rate_limiter => true,
+                  bucket_size => maps:get(min_bucket_size, DynamicOpts0)},
+  case new(Id, DynamicOpts) of
+    ok ->
+      case speed_trap_dynamic:register_dynamic_limiter(Id, DynamicOpts) of
+        ok ->
+          ok;
+        {error, Reason} ->
+          % Clean up the bucket if dynamic registration fails
+          delete(Id, false),
+          {error, Reason}
+      end;
+    {error, _} = Error ->
+      Error
   end.
 
 %% @doc Deletes a token bucket as well as a possibly stored template based token bucket override
@@ -148,6 +192,12 @@ unblock(Id) ->
 -spec delete_override(id()) -> ok.
 delete_override(Id) ->
   speed_trap_token_bucket:delete_override(Id).
+
+%% @doc Deletes a dynamic rate limiter.
+-spec delete_dynamic(id()) -> ok | {error, no_such_speed_trap()}.
+delete_dynamic(Id) ->
+  speed_trap_dynamic:unregister_dynamic_limiter(Id),
+  delete(Id, false).
 
 %%-----------------------------------------------------------------------------
 %% Internal functions
