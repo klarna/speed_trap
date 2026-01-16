@@ -160,18 +160,27 @@ check_and_adjust_bucket_size(DynState) ->
       _ ->
         round(TotalRejections / TotalRequests * 100)
     end,
+  %% Calculate the target bucket size after potential downscaling
+  DownscaleTarget = CurrentBucketSize - AdjustCount,
+  %% Only downscale if rejection rate is below threshold AND total requests
+  %% are less than the downscale target. This prevents downscaling when we're
+  %% at capacity with no rejections (i.e., traffic is utilizing the current limit).
+  ShouldDownscale =
+    RejectionRate < Threshold
+    andalso CurrentBucketSize > MinBucketSize
+    andalso TotalRequests < DownscaleTarget,
   if RejectionRate > Threshold andalso CurrentBucketSize < MaxBucketSize ->
        % Upscale: increase bucket_size
        NewQ = min(CurrentBucketSize + AdjustCount, MaxBucketSize),
        adjust_bucket_size(Id, CurrentBucketSize, NewQ, RefillCount),
        NewQ;
-     RejectionRate < Threshold andalso CurrentBucketSize > MinBucketSize ->
-       % Downscale: decrease bucket_size
-       NewQ = max(CurrentBucketSize - AdjustCount, MinBucketSize),
+     ShouldDownscale ->
+       % Downscale: decrease bucket_size only when traffic is low enough
+       NewQ = max(DownscaleTarget, MinBucketSize),
        adjust_bucket_size(Id, CurrentBucketSize, NewQ, RefillCount),
        NewQ;
      true ->
-       % No adjustment needed
+       % No adjustment needed - either at optimal size or traffic justifies current size
        CurrentBucketSize
   end,
   % Schedule next check

@@ -949,6 +949,101 @@ dynamic_rate_limiter_gradual_scaling_test() ->
   ok = speed_trap:delete_dynamic(Id),
   application:stop(speed_trap).
 
+%% Test that dynamic rate limiter stays stable at an intermediate bucket size
+%% when traffic is high enough (>= bucket_size - adjust_count), even with 0% rejection rate.
+%% This prevents unnecessary downscaling when the system is operating at capacity.
+dynamic_rate_limiter_stable_at_intermediate_size_test() ->
+  application:ensure_all_started(speed_trap),
+  Id = unique_id(?FUNCTION_NAME),
+  MinBucketSize = 15,
+  MaxBucketSize = 30,
+  AdjustCount = 5,
+  ScalingInterval = 500,
+  DynamicOpts =
+    #{min_bucket_size => MinBucketSize,
+      max_bucket_size => MaxBucketSize,
+      scaling_time_interval => ScalingInterval,
+      rejection_rate_threshold => 30,
+      scaling_bucket_size_adjust_count => AdjustCount,
+      refill_interval => 1000,
+      refill_count => 1,
+      delete_when_full => false},
+  ok = speed_trap:new_dynamic(Id, DynamicOpts),
+  %% Verify we start at min_bucket_size
+  {ok, InitialOpts} = speed_trap:options(Id),
+  ?assertEqual(MinBucketSize, maps:get(bucket_size, InitialOpts)),
+  %% Generate high rejection rate to trigger upscaling from 15 to 20
+  %% Make many requests quickly to exhaust the bucket and cause rejections
+  [speed_trap:try_pass(Id) || _ <- lists:seq(1, 100)],
+  %% Wait for scaling interval plus margin
+  timer:sleep(ScalingInterval + 100),
+  %% Verify bucket size has increased to 20
+  {ok, UpscaledOpts} = speed_trap:options(Id),
+  UpscaledBucketSize = maps:get(bucket_size, UpscaledOpts),
+  ?assertEqual(MinBucketSize + AdjustCount, UpscaledBucketSize),
+  %% Modify to refill bucket to full capacity before stability test
+  %% This ensures we start with a full bucket of 20 tokens
+  ok = speed_trap:modify(Id, #{bucket_size => UpscaledBucketSize}),
+  %% Now generate traffic that is high enough to justify the current bucket size (20)
+  %% but with 0% rejection rate.
+  [speed_trap:try_pass(Id) || _ <- lists:seq(1, 20)],
+  %% Wait for the full scaling interval plus margin
+  timer:sleep(ScalingInterval + 100),
+  %% Verify bucket size has NOT decreased
+  {ok, Opts} = speed_trap:options(Id),
+  CurrentBucketSize = maps:get(bucket_size, Opts),
+  ?assertEqual(UpscaledBucketSize,
+               CurrentBucketSize,
+               "Bucket size should remain stable when traffic justifies it"),
+  ok = speed_trap:delete_dynamic(Id),
+  application:stop(speed_trap).
+
+%% Test that dynamic rate limiter correctly downscales when traffic drops
+%% below (bucket_size - adjust_count) threshold
+dynamic_rate_limiter_downscales_on_low_traffic_test() ->
+  application:ensure_all_started(speed_trap),
+  Id = unique_id(?FUNCTION_NAME),
+  MinBucketSize = 15,
+  MaxBucketSize = 30,
+  AdjustCount = 5,
+  ScalingInterval = 500,
+  DynamicOpts =
+    #{min_bucket_size => MinBucketSize,
+      max_bucket_size => MaxBucketSize,
+      scaling_time_interval => ScalingInterval,
+      rejection_rate_threshold => 30,
+      scaling_bucket_size_adjust_count => AdjustCount,
+      refill_interval => 1000,
+      refill_count => 1,
+      delete_when_full => false},
+  ok = speed_trap:new_dynamic(Id, DynamicOpts),
+  %% Verify we start at min_bucket_size
+  {ok, InitialOpts} = speed_trap:options(Id),
+  ?assertEqual(MinBucketSize, maps:get(bucket_size, InitialOpts)),
+  %% Generate high rejection rate to trigger upscaling from 15 to 20
+  [speed_trap:try_pass(Id) || _ <- lists:seq(1, 100)],
+  %% Wait for scaling interval plus margin
+  timer:sleep(ScalingInterval + 100),
+  %% Verify bucket size has increased to 20
+  {ok, UpscaledOpts} = speed_trap:options(Id),
+  UpscaledBucketSize = maps:get(bucket_size, UpscaledOpts),
+  ?assertEqual(MinBucketSize + AdjustCount, UpscaledBucketSize),
+  %% Now generate low traffic that doesn't justify the current bucket size (20)
+  %% TotalRequests < bucket_size - adjust_count (20 - 5 = 15)
+  %% We'll make only 10 requests
+  [speed_trap:try_pass(Id) || _ <- lists:seq(1, 10)],
+  %% Wait for scaling interval plus margin
+  timer:sleep(ScalingInterval + 100),
+  %% Verify bucket size has decreased back to 15
+  {ok, FinalOpts} = speed_trap:options(Id),
+  FinalBucketSize = maps:get(bucket_size, FinalOpts),
+  ExpectedBucketSize = UpscaledBucketSize - AdjustCount,
+  ?assertEqual(ExpectedBucketSize,
+               FinalBucketSize,
+               "Bucket size should decrease when traffic is low"),
+  ok = speed_trap:delete_dynamic(Id),
+  application:stop(speed_trap).
+
 unique_id(Name) ->
   {Name, unique_resource()}.
 
