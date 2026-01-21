@@ -178,11 +178,24 @@ speed_trap:delete_dynamic(Id).
 ### How it works
 1. The limiter starts at `min_bucket_size` (e.g., 20 RPS)
 2. Every `scaling_time_interval`, it calculates the rejection rate over that period
-3. If rejection rate > `rejection_rate_threshold`, bucket_size increases by `scaling_bucket_size_adjust_count` (up to `max_bucket_size`)
-4. If rejection rate < `rejection_rate_threshold`, bucket_size decreases by `scaling_bucket_size_adjust_count` (down to `min_bucket_size`)
-5. The underlying token bucket is automatically reconfigured with each adjustment
+3. If rejection rate > `rejection_rate_threshold`, bucket_size increases by increments of `scaling_bucket_size_adjust_count` (up to `max_bucket_size`)
+4. If rejection rate < `rejection_rate_threshold` **AND** total requests < `bucket_size - scaling_bucket_size_adjust_count`, bucket_size decreases by decrements of `scaling_bucket_size_adjust_count` (down to `min_bucket_size`)
+5. If rejection rate < `rejection_rate_threshold` but traffic is high enough (>= `bucket_size - scaling_bucket_size_adjust_count`), bucket_size remains stable
+6. The underlying token bucket is automatically reconfigured with each adjustment
 
 This gradual scaling gives downstream systems time to scale accordingly.
+
+### Stability at capacity
+The dynamic rate limiter is designed to remain stable when operating at capacity with no/few rejections. 
+If the system has scaled up to handle traffic and is now running smoothly, 
+it won't immediately downscale just because there are no rejections. Instead, it only downscales 
+when traffic actually drops below the threshold (`bucket_size - scaling_bucket_size_adjust_count`).
+
+This prevents oscillation where the limiter would:
+1. Upscale due to rejections
+2. Immediately downscale because rejection rate drops to 0%
+3. Upscale again due to new rejections
+4. Repeat...
 
 ## Template rate limiters
 When you do not know upfront all the rate limiters that you need you can add templates for rate limiters and connect them to rate limiter id patterns.
