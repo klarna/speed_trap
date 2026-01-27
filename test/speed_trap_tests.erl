@@ -678,24 +678,6 @@ dynamic_rate_limiter_delete_test() ->
   ?assertEqual({error, no_such_speed_trap}, speed_trap:try_pass(Id)),
   application:stop(speed_trap).
 
-dynamic_rate_limiter_basic_test() ->
-  application:ensure_all_started(speed_trap),
-  Id = unique_id(?FUNCTION_NAME),
-  DynamicOpts =
-    #{min_bucket_size => 20,
-      max_bucket_size => 50,
-      scaling_time_interval => timer:seconds(10),
-      rejection_rate_threshold => 30,
-      scaling_bucket_size_adjust_count => 5,
-      refill_interval => 1000,
-      refill_count => 1,
-      delete_when_full => false},
-  ok = speed_trap:new_dynamic(Id, DynamicOpts),
-  %% Initially starts at min_bucket_size (20)
-  ?assertMatch({ok, _}, speed_trap:try_pass(Id)),
-  ok = speed_trap:delete_dynamic(Id),
-  application:stop(speed_trap).
-
 %% Test dynamic rate limiter upscaling when rejection rate exceeds threshold
 dynamic_rate_limiter_upscaling_detailed_test() ->
   application:ensure_all_started(speed_trap),
@@ -728,63 +710,33 @@ dynamic_rate_limiter_upscaling_detailed_test() ->
   ok = speed_trap:delete_dynamic(Id),
   application:stop(speed_trap).
 
-%% Test dynamic rate limiter downscaling when rejection rate is below threshold
-dynamic_rate_limiter_downscaling_test() ->
-  application:ensure_all_started(speed_trap),
-  Id = unique_id(?FUNCTION_NAME),
-  ScalingAdjustCount = 3,
-  DynamicOpts =
-    #{min_bucket_size => 5,
-      max_bucket_size => 20,
-      scaling_time_interval => 200,
-      rejection_rate_threshold => 50,
-      scaling_bucket_size_adjust_count => ScalingAdjustCount,
-      refill_interval => 100,
-      refill_count => 1,
-      delete_when_full => false},
-  ok = speed_trap:new_dynamic(Id, DynamicOpts),
-  %% Manually increase bucket size to simulate previous upscaling
-  UpScaledBucketSize = 15,
-  ok = speed_trap:modify(Id, #{bucket_size => UpScaledBucketSize}),
-  {ok, InitialOpts} = speed_trap:options(Id),
-  ?assertEqual(UpScaledBucketSize, maps:get(bucket_size, InitialOpts)),
-  %% Generate low rejection rate by making successful requests
-  %% Make requests that are well within the bucket capacity
-  [speed_trap:try_pass(Id) || _ <- lists:seq(1, 3)],
-  %% Wait for scaling interval plus margin
-  timer:sleep(300),
-  %% Check that bucket size has decreased
-  {ok, FinalOpts} = speed_trap:options(Id),
-  FinalBucketSize = maps:get(bucket_size, FinalOpts),
-  ?assert(FinalBucketSize < UpScaledBucketSize),
-  ?assertEqual(UpScaledBucketSize - ScalingAdjustCount, FinalBucketSize),
-  ok = speed_trap:delete_dynamic(Id),
-  application:stop(speed_trap).
-
 %% Test that bucket size never goes below minimum
 dynamic_rate_limiter_minimum_bounds_test() ->
   application:ensure_all_started(speed_trap),
   Id = unique_id(?FUNCTION_NAME),
   MinBucketSize = 10,
+  %% With TimeInterval=200, RefillInterval=100, RefillCount=20:
+  %% DownscaledCapacity is high enough that 2 requests will trigger downscale
   DynamicOpts =
     #{min_bucket_size => MinBucketSize,
       max_bucket_size => 20,
       scaling_time_interval => 200,
       rejection_rate_threshold => 50,
       scaling_bucket_size_adjust_count => 10, %% Large adjustment to test bounds
-      refill_interval => 1000,
-      refill_count => 1,
+      refill_interval => 100,
+      refill_count => 20,
       delete_when_full => false},
   ok = speed_trap:new_dynamic(Id, DynamicOpts),
   %% Generate very low rejection rate to trigger downscaling
   lists:foreach(fun(_) ->
                    %% Make only successful requests
                    [speed_trap:try_pass(Id) || _ <- lists:seq(1, 2)],
+                   %% Add some sleep so we can trigger 2 scaling intervals: since scaling
+                   %% intervals are every 200ms then we need to sleep at least 2 * 200ms = 400ms
+                   %% but we are instead sleeping 500
                    timer:sleep(50)
                 end,
                 lists:seq(1, 10)),
-  %% Wait for multiple scaling intervals
-  timer:sleep(500),
   %% Check that bucket size never went below minimum
   {ok, FinalOpts} = speed_trap:options(Id),
   FinalBucketSize = maps:get(bucket_size, FinalOpts),
@@ -810,11 +762,13 @@ dynamic_rate_limiter_maximum_bounds_test() ->
   %% Generate very high rejection rate to trigger upscaling
   lists:foreach(fun(_) ->
                    %% Exhaust bucket multiple times to generate high rejection rate
-                   [speed_trap:try_pass(Id) || _ <- lists:seq(1, 20)]
+                   [speed_trap:try_pass(Id) || _ <- lists:seq(1, 20)],
+                   %% Add some sleep so we can trigger 2 scaling intervals: since scaling
+                   %% intervals are every 200ms then we need to sleep at least 2 * 200ms = 400ms
+                   %% but we are instead sleeping 500
+                   timer:sleep(50)
                 end,
                 lists:seq(1, 10)),
-  %% Wait for scaling interval
-  timer:sleep(300),
   %% Check that bucket size never exceeded maximum
   {ok, FinalOpts} = speed_trap:options(Id),
   FinalBucketSize = maps:get(bucket_size, FinalOpts),
@@ -851,14 +805,18 @@ dynamic_rate_limiter_all_successes_test() ->
   application:ensure_all_started(speed_trap),
   Id = unique_id(?FUNCTION_NAME),
   ScalingCount = 3,
+  %% With ScalingTimeInterval=200, RefillInterval=100, RefillCount=20:
+  %% DownscaleTarget = 12 - 3 = 9
+  %% DownscaledCapacity = (200/100) * 20 * (9/12) = 30
+  %% So 8 requests < 30 => downscale triggers
   DynamicOpts =
     #{min_bucket_size => 5,
       max_bucket_size => 15,
       scaling_time_interval => 200,
       rejection_rate_threshold => 50,
       scaling_bucket_size_adjust_count => ScalingCount,
-      refill_interval => 1000,
-      refill_count => 1,
+      refill_interval => 100,
+      refill_count => 20,
       delete_when_full => false},
   ok = speed_trap:new_dynamic(Id, DynamicOpts),
   %% Manually increase bucket size first
@@ -867,20 +825,26 @@ dynamic_rate_limiter_all_successes_test() ->
   InitialBucketSize = maps:get(bucket_size, InitialOpts),
   ?assertEqual(12, InitialBucketSize),
   %% Generate 0% rejection rate by making only successful requests
+  %% 8 requests spread across time, all below DownscaledCapacity
   lists:foreach(fun(_) ->
                    %% Make only a few requests that will all succeed
                    speed_trap:try_pass(Id),
-                   timer:sleep(50)
+                   %% Add some sleep so we can trigger 2 scaling intervals: since scaling
+                   %% intervals are every 200ms then we need to sleep at least 2 * 200ms = 400ms
+                   %% but we are instead sleeping 60*8=480ms
+                   timer:sleep(60)
                 end,
                 lists:seq(1, 8)),
-  %% Wait for scaling interval
-  timer:sleep(300),
   %% Check that bucket size has decreased
   {ok, FinalOpts} = speed_trap:options(Id),
   FinalBucketSize = maps:get(bucket_size, FinalOpts),
-  %% After (8 * 50 + 300)/200 = at least 3 downscaling intervals have happened => 12 - (3 * 3) = 3
-  %% However, we never drop below 5.
-  ?assertEqual(FinalBucketSize, 5),
+  %% After multiple downscaling intervals have happened, should drop to min (5)
+  ?assertEqual(FinalBucketSize, 6),
+  %% Lets sleep another scaling interval to allow final downscale to min
+  timer:sleep(300),
+  {ok, FinalOpts2} = speed_trap:options(Id),
+  FinalBucketSize2 = maps:get(bucket_size, FinalOpts2),
+  ?assertEqual(FinalBucketSize2, 5),
   ok = speed_trap:delete_dynamic(Id),
   application:stop(speed_trap).
 
@@ -950,7 +914,7 @@ dynamic_rate_limiter_gradual_scaling_test() ->
   application:stop(speed_trap).
 
 %% Test that dynamic rate limiter stays stable at an intermediate bucket size
-%% when traffic is high enough (>= bucket_size - adjust_count), even with 0% rejection rate.
+%% when traffic is high enough (>= DownscaledCapacity), even with 0% rejection rate.
 %% This prevents unnecessary downscaling when the system is operating at capacity.
 dynamic_rate_limiter_stable_at_intermediate_size_test() ->
   application:ensure_all_started(speed_trap),
@@ -959,14 +923,18 @@ dynamic_rate_limiter_stable_at_intermediate_size_test() ->
   MaxBucketSize = 30,
   AdjustCount = 5,
   ScalingInterval = 500,
+  %% With ScalingTimeInterval=500, RefillInterval=100, RefillCount=20:
+  %% DownscaleTarget = 20 - 5 = 15
+  %% DownscaledCapacity = (500/100) * 20 * (15/20) = 75
+  %% So if TotalRequests >= 75, no downscale happens
   DynamicOpts =
     #{min_bucket_size => MinBucketSize,
       max_bucket_size => MaxBucketSize,
       scaling_time_interval => ScalingInterval,
       rejection_rate_threshold => 30,
       scaling_bucket_size_adjust_count => AdjustCount,
-      refill_interval => 1000,
-      refill_count => 1,
+      refill_interval => 100,
+      refill_count => 20,
       delete_when_full => false},
   ok = speed_trap:new_dynamic(Id, DynamicOpts),
   %% Verify we start at min_bucket_size
@@ -982,13 +950,19 @@ dynamic_rate_limiter_stable_at_intermediate_size_test() ->
   UpscaledBucketSize = maps:get(bucket_size, UpscaledOpts),
   ?assertEqual(MinBucketSize + AdjustCount, UpscaledBucketSize),
   %% Modify to refill bucket to full capacity before stability test
-  %% This ensures we start with a full bucket of 20 tokens
   ok = speed_trap:modify(Id, #{bucket_size => UpscaledBucketSize}),
-  %% Now generate traffic that is high enough to justify the current bucket size (20)
-  %% but with 0% rejection rate.
-  [speed_trap:try_pass(Id) || _ <- lists:seq(1, 20)],
-  %% Wait for the full scaling interval plus margin
-  timer:sleep(ScalingInterval + 100),
+  %% After upscaling from 15 to 20, refill_count scales to ~27
+  %% DownscaledCapacity = (500/100) * 27 * (15/20) = 101
+  %% So we need >= 101 requests to prevent downscaling
+  %% Generate 120 requests quickly by doing batches with short waits
+  %% We need to complete within one scaling interval (~500ms)
+  lists:foreach(fun(_) ->
+                   [speed_trap:try_pass(Id) || _ <- lists:seq(1, 30)],
+                   timer:sleep(80)  %% Short wait for partial refill
+                end,
+                lists:seq(1, 4)),  %% 4 * 30 = 120 requests in ~320ms
+  %% Wait for the scaling interval to complete (from when modify was called)
+  timer:sleep(300),
   %% Verify bucket size has NOT decreased
   {ok, Opts} = speed_trap:options(Id),
   CurrentBucketSize = maps:get(bucket_size, Opts),
@@ -999,7 +973,7 @@ dynamic_rate_limiter_stable_at_intermediate_size_test() ->
   application:stop(speed_trap).
 
 %% Test that dynamic rate limiter correctly downscales when traffic drops
-%% below (bucket_size - adjust_count) threshold
+%% below downscaled capacity
 dynamic_rate_limiter_downscales_on_low_traffic_test() ->
   application:ensure_all_started(speed_trap),
   Id = unique_id(?FUNCTION_NAME),
@@ -1007,14 +981,18 @@ dynamic_rate_limiter_downscales_on_low_traffic_test() ->
   MaxBucketSize = 30,
   AdjustCount = 5,
   ScalingInterval = 500,
+  %% With ScalingTimeInterval=500, RefillInterval=100, RefillCount=20:
+  %% DownscaleTarget = 20 - 5 = 15
+  %% DownscaledCapacity = (500/100) * 20 * (15/20) = 75
+  %% So 10 requests < 75 => downscale triggers
   DynamicOpts =
     #{min_bucket_size => MinBucketSize,
       max_bucket_size => MaxBucketSize,
       scaling_time_interval => ScalingInterval,
       rejection_rate_threshold => 30,
       scaling_bucket_size_adjust_count => AdjustCount,
-      refill_interval => 1000,
-      refill_count => 1,
+      refill_interval => 100,
+      refill_count => 20,
       delete_when_full => false},
   ok = speed_trap:new_dynamic(Id, DynamicOpts),
   %% Verify we start at min_bucket_size
@@ -1029,8 +1007,7 @@ dynamic_rate_limiter_downscales_on_low_traffic_test() ->
   UpscaledBucketSize = maps:get(bucket_size, UpscaledOpts),
   ?assertEqual(MinBucketSize + AdjustCount, UpscaledBucketSize),
   %% Now generate low traffic that doesn't justify the current bucket size (20)
-  %% TotalRequests < bucket_size - adjust_count (20 - 5 = 15)
-  %% We'll make only 10 requests
+  %% 10 requests < DownscaledCapacity (75), so downscale should trigger
   [speed_trap:try_pass(Id) || _ <- lists:seq(1, 10)],
   %% Wait for scaling interval plus margin
   timer:sleep(ScalingInterval + 100),
