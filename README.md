@@ -179,9 +179,16 @@ speed_trap:delete_dynamic(Id).
 1. The limiter starts at `min_bucket_size` (e.g., 20 RPS)
 2. Every `scaling_time_interval`, it calculates the rejection rate over that period
 3. If rejection rate > `rejection_rate_threshold`, bucket_size increases by increments of `scaling_bucket_size_adjust_count` (up to `max_bucket_size`)
-4. If rejection rate < `rejection_rate_threshold` **AND** total requests < `bucket_size - scaling_bucket_size_adjust_count`, bucket_size decreases by decrements of `scaling_bucket_size_adjust_count` (down to `min_bucket_size`)
-5. If rejection rate < `rejection_rate_threshold` but traffic is high enough (>= `bucket_size - scaling_bucket_size_adjust_count`), bucket_size remains stable
+4. If rejection rate < `rejection_rate_threshold` **AND** total requests < downscaled capacity during the scaling_interval then bucket_size decreases by decrements of `scaling_bucket_size_adjust_count` (down to `min_bucket_size`)
+5. If rejection rate < `rejection_rate_threshold` but traffic is high enough (>= downscaled capacity), bucket_size remains stable
 6. The underlying token bucket is automatically reconfigured with each adjustment
+
+The **downscaled capacity** is calculated as the throughput the bucket would handle at the smaller size:
+```
+Since refill_count scales proportionally with bucket_size, the capacity
+at the downscaled size is: (ScalingTimeInterval / RefillInterval) * DownscaledRefillCount
+where DownscaledRefillCount = RefillCount * (PotentialDownscaleTarget / CurrentBucketSize)
+```
 
 This gradual scaling gives downstream systems time to scale accordingly.
 
@@ -189,7 +196,7 @@ This gradual scaling gives downstream systems time to scale accordingly.
 The dynamic rate limiter is designed to remain stable when operating at capacity with no/few rejections. 
 If the system has scaled up to handle traffic and is now running smoothly, 
 it won't immediately downscale just because there are no rejections. Instead, it only downscales 
-when traffic actually drops below the threshold (`bucket_size - scaling_bucket_size_adjust_count`).
+when traffic actually drops below the limit that the downscaled bucket could handle.
 
 This prevents oscillation where the limiter would:
 1. Upscale due to rejections

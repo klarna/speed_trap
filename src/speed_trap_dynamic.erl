@@ -7,7 +7,8 @@
 %%%
 %%% Key features:
 %%% - Automatic upscaling when rejection rate exceeds threshold
-%%% - Automatic downscaling when rejection rate is below threshold
+%%% - Automatic downscaling when rejection rate is below threshold AND
+%%%   total requests are less than downscaled capacity during the scaling_interval
 %%% - Configurable min/max bucket_size, scaling time intervals, and adjustment increments
 %%% - Gradual bucket_size changes to allow downstream systems to scale
 %%% - Uses atomics for high-performance rejection/acceptance tracking
@@ -145,7 +146,8 @@ check_and_adjust_bucket_size(DynState) ->
      min_bucket_size := MinBucketSize,
      max_bucket_size := MaxBucketSize,
      refill_count := RefillCount,
-     scaling_time_interval := TimeInterval,
+     refill_interval := RefillInterval,
+     scaling_time_interval := ScalingTimeInterval,
      rejection_rate_threshold := Threshold,
      scaling_bucket_size_adjust_count := AdjustCount}} =
     speed_trap_token_bucket:options(Id),
@@ -161,30 +163,35 @@ check_and_adjust_bucket_size(DynState) ->
         round(TotalRejections / TotalRequests * 100)
     end,
   %% Calculate the target bucket size after potential downscaling
-  DownscaleTarget = CurrentBucketSize - AdjustCount,
+  PotentialDownscaleTarget = max(CurrentBucketSize - AdjustCount, MinBucketSize),
+  %% Calculate the throughput capacity at the downscaled bucket size.
+  %% Since refill_count scales proportionally with bucket_size, the capacity
+  %% at the downscaled size is: (ScalingTimeInterval / RefillInterval) * DownscaledRefillCount
+  %% where DownscaledRefillCount = RefillCount * (PotentialDownscaleTarget / CurrentBucketSize)
+  PotentialDownscaledCapacity =
+    trunc(ScalingTimeInterval / RefillInterval
+          * RefillCount
+          * (PotentialDownscaleTarget / CurrentBucketSize)),
   %% Only downscale if rejection rate is below threshold AND total requests
-  %% are less than the downscale target. This prevents downscaling when we're
-  %% at capacity with no rejections (i.e., traffic is utilizing the current limit).
+  %% are less than what the downscaled bucket could handle. This prevents
+  %% downscaling when traffic would overwhelm the smaller bucket.
   ShouldDownscale =
     RejectionRate < Threshold
     andalso CurrentBucketSize > MinBucketSize
-    andalso TotalRequests < DownscaleTarget,
+    andalso TotalRequests < PotentialDownscaledCapacity,
   if RejectionRate > Threshold andalso CurrentBucketSize < MaxBucketSize ->
        % Upscale: increase bucket_size
        NewQ = min(CurrentBucketSize + AdjustCount, MaxBucketSize),
-       adjust_bucket_size(Id, CurrentBucketSize, NewQ, RefillCount),
-       NewQ;
+       adjust_bucket_size(Id, CurrentBucketSize, NewQ, RefillCount);
      ShouldDownscale ->
        % Downscale: decrease bucket_size only when traffic is low enough
-       NewQ = max(DownscaleTarget, MinBucketSize),
-       adjust_bucket_size(Id, CurrentBucketSize, NewQ, RefillCount),
-       NewQ;
+       adjust_bucket_size(Id, CurrentBucketSize, PotentialDownscaleTarget, RefillCount);
      true ->
        % No adjustment needed - either at optimal size or traffic justifies current size
-       CurrentBucketSize
+       ok
   end,
   % Schedule next check
-  {ok, TimerRef} = timer:send_after(TimeInterval, self(), {check_and_adjust, Id}),
+  {ok, TimerRef} = timer:send_after(ScalingTimeInterval, self(), {check_and_adjust, Id}),
   DynState#dynamic_state{timer_ref = TimerRef}.
 
 -spec adjust_bucket_size(speed_trap:id(), pos_integer(), pos_integer(), pos_integer()) -> ok.
